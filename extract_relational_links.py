@@ -159,8 +159,52 @@ class SolidEdgeRelationalExtractor:
                 'quantite': 1, # Dans Solid Edge, 1 occurrence = 1 pièce physique. On ne groupe pas ici.
                 'ref_utilisat': name,
                 'version': self._get_document_property(doc, 'Version', '1'),
-                'revision': self._get_document_property(doc, 'Revision', 'A')
+                'revision': self._get_document_property(doc, 'Revision', 'A'),
+                'designation': self._get_document_property(doc, 'Title', ''),
+                'APLMC_3D_reference': self._get_document_property(doc, 'APLMC_3D_reference', ''),
+                'APLMC_date_CAD_change': self._get_document_property(doc, 'APLMC_date_CAD_change', ''),
+                'approbateur': self._get_document_property(doc, 'approbateur', ''),
+                'createur_ori': self._get_document_property(doc, 'createur_ori', ''),
+                'date_approbation': self._get_document_property(doc, 'date_approbation', ''),
+                'date_creation_ori': self._get_document_property(doc, 'date_creation_ori', ''),
+                'date_verification': self._get_document_property(doc, 'date_verification', ''),
+                'date_version_1': self._get_document_property(doc, 'date_version_1', ''),
+                'date_version_2': self._get_document_property(doc, 'date_version_2', ''),
+                'format': self._get_document_property(doc, 'format', ''),
+                'indice_1': self._get_document_property(doc, 'indice_1', ''),
+                'indice_2': self._get_document_property(doc, 'indice_2', ''),
+                'libelle_modif_1': self._get_document_property(doc, 'libelle_modif_1', ''),
+                'libelle_modif_2': self._get_document_property(doc, 'libelle_modif_2', ''),
+                'type_objet': self._get_document_property(doc, 'type_objet', ''),
+                'user_version_1': self._get_document_property(doc, 'user_version_1', ''),
+                'user_version_2': self._get_document_property(doc, 'user_version_2', ''),
+                'verificateur': self._get_document_property(doc, 'verificateur', ''),
+                'APLMC_item_mgt': self._get_document_property(doc, 'APLMC_item_mgt', ''),
+                'APLMC_my3Dviewer_ID': self._get_document_property(doc, 'APLMC_my3Dviewer_ID', ''),
+                'APLMC_my3Dviewer_timestamp': self._get_document_property(doc, 'APLMC_my3Dviewer_timestamp', ''),
+                'APLMC_pivot': self._get_document_property(doc, 'APLMC_pivot', ''),
+                'conditionnement': self._get_document_property(doc, 'conditionnement', ''),
+                'erp_expdat': self._get_document_property(doc, 'erp_expdat', ''),
+                'erp_itmref': self._get_document_property(doc, 'erp_itmref', ''),
+                'erp_manage': self._get_document_property(doc, 'erp_manage', ''),
+                'erp_stu': self._get_document_property(doc, 'erp_stu', ''),
+                'erp_tclcod': self._get_document_property(doc, 'erp_tclcod', ''),
+                'famille_objet': self._get_document_property(doc, 'famille_objet', ''),
+                'rohs': self._get_document_property(doc, 'rohs', ''),
+                'erp_bomenddat': self._get_document_property(doc, 'erp_bomenddat', ''),
+                'erp_bomsho': self._get_document_property(doc, 'erp_bomsho', ''),
+                'erp_bomstrdat': self._get_document_property(doc, 'erp_bomstrdat', ''),
+                'erp_cpnope': self._get_document_property(doc, 'erp_cpnope', ''),
+                'erp_cpntyp': self._get_document_property(doc, 'erp_cpntyp', ''),
+                'erp_scoflg': self._get_document_property(doc, 'erp_scoflg', ''),
+                'unite': self._get_document_property(doc, 'unite', ''),
+                'Attachments': ''
             }
+            
+            # Ajouter les propriétés physiques
+            if class_type == 'PART_A':
+                physical_props = self._get_physical_properties(doc)
+                component_info.update(physical_props)
             
             self.relational_data.append(component_info)
             
@@ -181,7 +225,54 @@ class SolidEdgeRelationalExtractor:
                 'quantite': 1,
                 'ref_utilisat': drawing_name,
                 'version': "1",
-                'revision': "A"
+                'revision': "A",
+                'designation': '',
+                'APLMC_3D_reference': '',
+                'APLMC_date_CAD_change': '',
+                'approbateur': '',
+                'createur_ori': '',
+                'date_approbation': '',
+                'date_creation_ori': '',
+                'date_verification': '',
+                'date_version_1': '',
+                'date_version_2': '',
+                'format': '',
+                'indice_1': '',
+                'indice_2': '',
+                'libelle_modif_1': '',
+                'libelle_modif_2': '',
+                'type_objet': '',
+                'user_version_1': '',
+                'user_version_2': '',
+                'verificateur': '',
+                'APLMC_item_mgt': '',
+                'APLMC_my3Dviewer_ID': '',
+                'APLMC_my3Dviewer_timestamp': '',
+                'APLMC_pivot': '',
+                'conditionnement': '',
+                'erp_expdat': '',
+                'erp_itmref': '',
+                'erp_manage': '',
+                'erp_stu': '',
+                'erp_tclcod': '',
+                'famille_objet': '',
+                'poids': '',
+                'rohs': '',
+                'surface': '',
+                'volume3D': '',
+                'densite': '',
+                'dim1': '',
+                'dim2': '',
+                'dim3': '',
+                'matiere': '',
+                'erp_bomenddat': '',
+                'erp_bomsho': '',
+                'erp_bomstrdat': '',
+                'erp_cpnope': '',
+                'erp_cpntyp': '',
+                'erp_scoflg': '',
+                'unite': '',
+                'Attachments': drawing_path
             }
             
             self.relational_data.append(drawing_info)
@@ -250,6 +341,64 @@ class SolidEdgeRelationalExtractor:
         except:
             # Si on n'arrive pas à lire les propriétés (fichier verrouillé, etc.), on renvoie la valeur par défaut
             return default_value
+    
+    def _get_physical_properties(self, doc):
+        """Extraire les propriétés physiques du document (poids, volume, densité, dimensions)"""
+        props = {
+            'poids': '',
+            'volume3D': '',
+            'densite': '',
+            'surface': '',
+            'dim1': '',
+            'dim2': '',
+            'dim3': '',
+            'matiere': ''
+        }
+        
+        try:
+            # Pour les pièces (.par), on peut accéder aux propriétés physiques
+            if doc.Type == 1:  # Part document
+                try:
+                    # Propriétés de masse
+                    mass_props = doc.MassProperties
+                    if mass_props:
+                        props['poids'] = str(round(mass_props.Mass, 3)) if hasattr(mass_props, 'Mass') else ''
+                        props['volume3D'] = str(round(mass_props.Volume, 3)) if hasattr(mass_props, 'Volume') else ''
+                        props['densite'] = str(round(mass_props.Density, 3)) if hasattr(mass_props, 'Density') else ''
+                        props['surface'] = str(round(mass_props.Area, 3)) if hasattr(mass_props, 'Area') else ''
+                except:
+                    pass
+                
+                try:
+                    # Dimensions (bounding box)
+                    if hasattr(doc, 'RangeBox'):
+                        range_box = doc.RangeBox
+                        if range_box:
+                            min_x = range_box.MinX if hasattr(range_box, 'MinX') else 0
+                            max_x = range_box.MaxX if hasattr(range_box, 'MaxX') else 0
+                            min_y = range_box.MinY if hasattr(range_box, 'MinY') else 0
+                            max_y = range_box.MaxY if hasattr(range_box, 'MaxY') else 0
+                            min_z = range_box.MinZ if hasattr(range_box, 'MinZ') else 0
+                            max_z = range_box.MaxZ if hasattr(range_box, 'MaxZ') else 0
+                            
+                            props['dim1'] = str(round(max_x - min_x, 3))
+                            props['dim2'] = str(round(max_y - min_y, 3))
+                            props['dim3'] = str(round(max_z - min_z, 3))
+                except:
+                    pass
+                
+                # Matériau
+                try:
+                    material = self._get_document_property(doc, 'Material', '')
+                    if not material:
+                        material = self._get_document_property(doc, 'Matériau', '')
+                    props['matiere'] = material
+                except:
+                    pass
+        except:
+            pass
+        
+        return props
     
     
     def extract_from_file(self, file_path):
@@ -323,7 +472,17 @@ class SolidEdgeRelationalExtractor:
         center_alignment = Alignment(horizontal='center', vertical='center')
         
         # En-têtes
-        headers = ["Level", "Relationship", "Class", "quantite", "ref_utilisat", "version", "revision"]
+        headers = [
+            "Level", "Relationship", "quantite", "Class", "ref_utilisat", "version", "revision",
+            "designation", "APLMC_3D_reference", "APLMC_date_CAD_change", "approbateur", "createur_ori",
+            "date_approbation", "date_creation_ori", "date_verification", "date_version_1", "date_version_2",
+            "format", "indice_1", "indice_2", "libelle_modif_1", "libelle_modif_2", "type_objet",
+            "user_version_1", "user_version_2", "verificateur", "APLMC_item_mgt", "APLMC_my3Dviewer_ID",
+            "APLMC_my3Dviewer_timestamp", "APLMC_pivot", "conditionnement", "erp_expdat", "erp_itmref",
+            "erp_manage", "erp_stu", "erp_tclcod", "famille_objet", "poids", "rohs", "surface",
+            "volume3D", "densite", "dim1", "dim2", "dim3", "matiere", "erp_bomenddat", "erp_bomsho",
+            "erp_bomstrdat", "erp_cpnope", "erp_cpntyp", "erp_scoflg", "unite", "Attachments"
+        ]
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col)
             cell.value = header
@@ -334,13 +493,21 @@ class SolidEdgeRelationalExtractor:
         
         # Données
         for row_idx, data in enumerate(data_to_export, 2):
-            ws.cell(row=row_idx, column=1, value=data['Level']).border = thin_border
-            ws.cell(row=row_idx, column=2, value=data['Relationship']).border = thin_border
-            ws.cell(row=row_idx, column=3, value=data['Class']).border = thin_border
-            ws.cell(row=row_idx, column=4, value=data['quantite']).border = thin_border
-            ws.cell(row=row_idx, column=5, value=data['ref_utilisat']).border = thin_border
-            ws.cell(row=row_idx, column=6, value=data['version']).border = thin_border
-            ws.cell(row=row_idx, column=7, value=data['revision']).border = thin_border
+            col = 1
+            for header in [
+                "Level", "Relationship", "quantite", "Class", "ref_utilisat", "version", "revision",
+                "designation", "APLMC_3D_reference", "APLMC_date_CAD_change", "approbateur", "createur_ori",
+                "date_approbation", "date_creation_ori", "date_verification", "date_version_1", "date_version_2",
+                "format", "indice_1", "indice_2", "libelle_modif_1", "libelle_modif_2", "type_objet",
+                "user_version_1", "user_version_2", "verificateur", "APLMC_item_mgt", "APLMC_my3Dviewer_ID",
+                "APLMC_my3Dviewer_timestamp", "APLMC_pivot", "conditionnement", "erp_expdat", "erp_itmref",
+                "erp_manage", "erp_stu", "erp_tclcod", "famille_objet", "poids", "rohs", "surface",
+                "volume3D", "densite", "dim1", "dim2", "dim3", "matiere", "erp_bomenddat", "erp_bomsho",
+                "erp_bomstrdat", "erp_cpnope", "erp_cpntyp", "erp_scoflg", "unite", "Attachments"
+            ]:
+                value = data.get(header, '')
+                ws.cell(row=row_idx, column=col, value=value).border = thin_border
+                col += 1
         
         # Ajuster la largeur des colonnes
         ws.column_dimensions['A'].width = 10
