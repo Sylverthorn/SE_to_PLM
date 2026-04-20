@@ -1,14 +1,11 @@
 """
-Solid Edge → PDM/PLM BOM Extractor (version fusionnée)
+Solid Edge → PDM/PLM BOM Extractor
 =======================================================
-Parcourt récursivement un assemblage Solid Edge (.asm) et génère un fichier
-Excel prêt à importer dans le PLM Andros (format structureData).
-
-Logique PDM  : traversée hiérarchique + Level / Relationship / Class
-               (issue de extract_relational_links.py)
-Colonnes PLM : format complet Andros + mapping propriétés CAO → PLM
-               + propriétés physiques + UI Tkinter
-               (issue de se_to_plm.py)
+# Auteur : Korichi Yanis
+# Date de création : 20 Avril 2026
+# Rôle du script : Parcourt récursivement un assemblage Solid Edge (.asm) et génère un fichier
+Excel à importer dans le PLM Andros.
+# v2 : Support mode dossier (batch) — traite chaque .asm racine séparément
 
 Prérequis :
   - Windows + Solid Edge installé
@@ -48,7 +45,6 @@ EXT_PART  = {".par", ".psm"}
 EXT_DRW   = {".dft"}
 EXT_ALL   = EXT_ASM | EXT_PART | EXT_DRW
 
-# Colonnes cibles pour Andros (ordre conservé depuis se_to_plm.py)
 COLUMNS = [
     "Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD",
     "erp_bomenddat", "erp_bomsho", "erp_bomstrdat", "erp_cpnope", "erp_cpntyp",
@@ -64,7 +60,6 @@ COLUMNS = [
     "volume3D", "densite", "dim1", "dim2", "dim3", "matiere", "Attachments",
 ]
 
-# Mapping propriétés Solid Edge → colonnes PLM
 SE_PROP_MAP = {
     "Title":        "designation",  "Désignation":   "designation",  "Designation":  "designation",
     "PartNumber":   "ref_utilisat", "Part Number":   "ref_utilisat", "Référence":    "ref_utilisat",
@@ -83,7 +78,6 @@ SE_PROP_MAP = {
     "APLMC_ItemMgt":"APLMC_item_mgt","RoHS":         "rohs",
 }
 
-# Valeurs par défaut pour les champs critiques
 SE_DEFAULT_VALUES = {
     "statut":        "Valide",
     "erp_manage":    "AUDROS",
@@ -95,7 +89,6 @@ SE_DEFAULT_VALUES = {
     "version":       "A",
 }
 
-# Sous-dossiers courants pour la recherche de fichiers .dft
 DRAWING_SUBDIRS = ["DESSINS", "MISES EN PLAN", "PLANS", "DRAWINGS", "DRAFTS"]
 
 
@@ -104,11 +97,6 @@ DRAWING_SUBDIRS = ["DESSINS", "MISES EN PLAN", "PLANS", "DRAWINGS", "DRAFTS"]
 # ---------------------------------------------------------------------------
 
 class SolidEdgeReader:
-    """
-    Gère la connexion à Solid Edge via COM et lit les propriétés d'un document.
-    Tente d'abord de se connecter à une instance existante, sinon en crée une.
-    """
-
     def __init__(self, visible: bool = False):
         self.app = None
         self.visible = visible
@@ -117,7 +105,6 @@ class SolidEdgeReader:
     def start(self):
         pythoncom.CoInitialize()
         try:
-            # Réutiliser une instance déjà ouverte
             self.app = win32com.client.GetActiveObject(SE_APP_ID)
             self._app_started_by_us = False
             print("[SE] Connecté à l'instance existante de Solid Edge.")
@@ -143,7 +130,6 @@ class SolidEdgeReader:
         pythoncom.CoUninitialize()
 
     def close_all_documents(self):
-        """Ferme tous les documents ouverts (utile avant de commencer le scan)."""
         if not self.app:
             return
         try:
@@ -157,23 +143,13 @@ class SolidEdgeReader:
         except Exception as e:
             print(f"[WARN] Fermeture documents : {e}")
 
-    # ------------------------------------------------------------------
-    # Lecture des propriétés d'un document déjà ouvert
-    # ------------------------------------------------------------------
-
     def read_doc_properties(self, doc) -> dict:
-        """
-        Extrait les propriétés d'un document COM déjà ouvert et les retourne
-        sous forme de dict {colonne_plm: valeur}.
-        """
-        result = dict(SE_DEFAULT_VALUES)  # Valeurs par défaut
+        result = dict(SE_DEFAULT_VALUES)
         ext = os.path.splitext(doc.FullName)[1].lower()
 
         props_raw = {}
         try:
             prop_sets = doc.Properties
-
-            # SummaryInformation
             try:
                 summary = prop_sets.Item("SummaryInformation")
                 for prop in ["Title", "Author", "Subject", "Keywords"]:
@@ -184,7 +160,6 @@ class SolidEdgeReader:
             except Exception:
                 pass
 
-            # ProjectInformation
             try:
                 project = prop_sets.Item("ProjectInformation")
                 for prop in ["PartNumber", "Revision", "DocumentNumber"]:
@@ -195,7 +170,6 @@ class SolidEdgeReader:
             except Exception:
                 pass
 
-            # Propriétés personnalisées
             try:
                 custom = prop_sets.Item("Custom")
                 for i in range(custom.Count):
@@ -204,7 +178,6 @@ class SolidEdgeReader:
             except Exception:
                 pass
 
-            # Itération générique sur tous les PropertySets (fallback)
             try:
                 for i in range(1, prop_sets.Count + 1):
                     try:
@@ -224,7 +197,6 @@ class SolidEdgeReader:
         except Exception:
             pass
 
-        # Propriétés physiques (pièces uniquement)
         if ext in EXT_PART:
             try:
                 phys = doc.PhysicalProperties
@@ -238,7 +210,6 @@ class SolidEdgeReader:
             except Exception:
                 pass
 
-        # Application du mapping SE → PLM
         for se_name, plm_col in SE_PROP_MAP.items():
             if props_raw.get(se_name) and plm_col not in result:
                 result[plm_col] = props_raw[se_name]
@@ -251,21 +222,11 @@ class SolidEdgeReader:
 # ---------------------------------------------------------------------------
 
 class PDMExtractor:
-    """
-    Parcourt récursivement la structure d'un assemblage Solid Edge.
-    Produit une liste d'entrées avec Level / Relationship / Class et toutes
-    les colonnes PLM Andros.
-    """
-
     def __init__(self, se_reader: SolidEdgeReader):
         self.reader = se_reader
         self.rows: list[dict] = []
         self._order = 0
         self._now_str = datetime.datetime.now().strftime("%d/%m/%Y 12:00:00 AM")
-
-    # ------------------------------------------------------------------
-    # Point d'entrée public
-    # ------------------------------------------------------------------
 
     def extract(self, asm_path: str) -> list[dict]:
         self.rows = []
@@ -282,29 +243,20 @@ class PDMExtractor:
 
         return self.rows
 
-    # ------------------------------------------------------------------
-    # Traversée récursive
-    # ------------------------------------------------------------------
-
     def _traverse_assembly(self, assembly, level: int):
-        """Traite l'assemblage lui-même puis ses occurrences (récursif)."""
         try:
-            # --- L'assemblage / sous-assemblage courant ---
             self._add_entry_from_doc(assembly, level, "ComposedOf", is_root_doc=True)
 
-            # --- Fichier de dessin associé ---
             drawing_path = self._find_associated_drawing(assembly)
             if drawing_path:
                 self._add_drawing_entry(drawing_path, level)
 
-            # --- Occurrences (composants enfants) ---
             occurrences = assembly.Occurrences
             for i in range(1, occurrences.Count + 1):
                 try:
                     occ = occurrences.Item(i)
                     self._order += 1
 
-                    # Filtrage BOM
                     try:
                         if not occ.IncludeInBom:
                             continue
@@ -313,10 +265,9 @@ class PDMExtractor:
 
                     self._add_entry_from_occurrence(occ, level + 1, "ComposedOf")
 
-                    # Récursion sur les sous-assemblages
                     try:
                         sub_doc = occ.OccurrenceDocument
-                        if sub_doc.Type == 3:   # igAssemblyDocument
+                        if sub_doc.Type == 3:
                             self._traverse_assembly(sub_doc, level + 1)
                     except Exception:
                         pass
@@ -327,16 +278,9 @@ class PDMExtractor:
         except Exception as e:
             print(f"[ERR] Traversée assemblage niveau {level} : {e}")
 
-    # ------------------------------------------------------------------
-    # Création d'une entrée PDM/PLM
-    # ------------------------------------------------------------------
-
     def _base_entry(self, level: int, relationship: str, class_type: str,
                     name: str, doc=None) -> dict:
-        """Construit un dict avec toutes les colonnes COLUMNS initialisées."""
         entry = {col: "" for col in COLUMNS}
-
-        # Champs structurels PDM
         entry["Level"]        = level
         entry["Relationship"] = relationship
         entry["Class"]        = class_type
@@ -346,18 +290,14 @@ class PDMExtractor:
         entry["SpecialCAD"]   = name.lower()
         entry["date_creation_ori"] = self._now_str
         entry["APLMC_pivot"]  = name.upper()
-
-        # Valeurs par défaut PLM
         entry.update(SE_DEFAULT_VALUES)
 
-        # Lecture des propriétés COM si disponible
         if doc is not None:
             try:
                 se_props = self.reader.read_doc_properties(doc)
                 for col, val in se_props.items():
                     if col in entry:
                         entry[col] = val
-                # S'assurer que ref_utilisat est renseigné
                 if not entry.get("ref_utilisat"):
                     entry["ref_utilisat"] = name.upper()
             except Exception as e:
@@ -366,25 +306,21 @@ class PDMExtractor:
         return entry
 
     def _doc_type_to_class(self, doc_type: int) -> str:
-        """Convertit le type COM Solid Edge en classe PLM."""
         mapping = {
-            1: "PART_A",      # igPartDocument      (.par)
-            3: "SUB_ASSY_A",  # igAssemblyDocument  (.asm)
-            4: "PART_A",      # igSheetMetalDocument(.psm)
-            5: "SUB_ASSY_A",  # igWeldmentDocument  (.pwd)
-            2: "CAD_DRAWING_A",# igDraftDocument    (.dft)
+            1: "PART_A",
+            3: "SUB_ASSY_A",
+            4: "PART_A",
+            5: "SUB_ASSY_A",
+            2: "CAD_DRAWING_A",
         }
         return mapping.get(doc_type, f"UNKNOWN_{doc_type}")
 
     def _add_entry_from_doc(self, doc, level: int, relationship: str,
                              is_root_doc: bool = False):
-        """Ajoute une entrée à partir d'un document COM directement ouvert."""
         try:
             name = os.path.splitext(os.path.basename(doc.FullName))[0]
             class_type = self._doc_type_to_class(doc.Type)
             entry = self._base_entry(level, relationship, class_type, name, doc)
-
-            # Attachment
             fname = os.path.basename(doc.FullName)
             ext = os.path.splitext(fname)[1].lstrip(".")
             entry["Attachments"] = (
@@ -396,10 +332,8 @@ class PDMExtractor:
             print(f"  [ERR] add_entry_from_doc : {e}")
 
     def _add_entry_from_occurrence(self, occurrence, level: int, relationship: str):
-        """Ajoute une entrée à partir d'une occurrence (composant enfant)."""
         try:
             name = occurrence.Name.split(':')[0]
-
             try:
                 doc = occurrence.OccurrenceDocument
                 doc_type = doc.Type
@@ -409,7 +343,6 @@ class PDMExtractor:
 
             class_type = self._doc_type_to_class(doc_type)
             entry = self._base_entry(level, relationship, class_type, name, doc)
-
             fname = os.path.basename(doc.FullName)
             ext = os.path.splitext(fname)[1].lstrip(".")
             entry["Attachments"] = (
@@ -421,7 +354,6 @@ class PDMExtractor:
             print(f"  [ERR] add_entry_from_occurrence '{getattr(occurrence, 'Name', '?')}' : {e}")
 
     def _add_drawing_entry(self, drawing_path: str, level: int):
-        """Ajoute une entrée de type Drawing (relation documentaire)."""
         try:
             name = os.path.splitext(os.path.basename(drawing_path))[0]
             entry = self._base_entry(level, "Drawing", "CAD_DRAWING_A", name, doc=None)
@@ -435,12 +367,7 @@ class PDMExtractor:
         except Exception as e:
             print(f"  [ERR] add_drawing_entry : {e}")
 
-    # ------------------------------------------------------------------
-    # Recherche du fichier .dft associé
-    # ------------------------------------------------------------------
-
     def _find_associated_drawing(self, doc) -> str | None:
-        """Cherche le fichier .dft associé à un document dans les dossiers courants."""
         try:
             doc_path = doc.FullName
             doc_dir  = os.path.dirname(doc_path)
@@ -467,12 +394,7 @@ class PDMExtractor:
             print(f"  [WARN] Recherche dessin : {e}")
         return None
 
-    # ------------------------------------------------------------------
-    # Agrégation des quantités (optionnel)
-    # ------------------------------------------------------------------
-
     def aggregate_quantities(self) -> list[dict]:
-        """Cumule les quantités pour les mêmes ref_utilisat / Level / Class."""
         aggregated: dict = {}
         for item in self.rows:
             key = (item["Level"], item["ref_utilisat"], item["Class"], item["Relationship"])
@@ -484,13 +406,69 @@ class PDMExtractor:
 
 
 # ---------------------------------------------------------------------------
+# Détection des .asm racines dans un dossier
+# ---------------------------------------------------------------------------
+
+def find_root_assemblies(folder: str, recursive: bool = False) -> list[str]:
+    """
+    Retourne la liste des .asm qui ne sont PAS référencés par un autre .asm
+    dans le même dossier — ce sont les vrais assemblages racines.
+
+    Si recursive=True, descend dans tous les sous-dossiers.
+    Sinon (défaut), ne regarde que le niveau supérieur du dossier.
+    """
+    # 1. Collecter tous les .asm du dossier (selon profondeur)
+    all_asm: list[str] = []
+    if recursive:
+        for root, _, files in os.walk(folder):
+            for f in files:
+                if f.lower().endswith(".asm"):
+                    all_asm.append(os.path.join(root, f))
+    else:
+        all_asm = [
+            os.path.join(folder, f)
+            for f in os.listdir(folder)
+            if f.lower().endswith(".asm")
+        ]
+
+    if not all_asm:
+        return []
+
+    # 2. Construire l'ensemble des noms de fichiers référencés dans d'autres .asm
+    #    On fait une recherche textuelle légère (pas d'ouverture COM)
+    referenced: set[str] = set()
+    for asm_path in all_asm:
+        try:
+            with open(asm_path, "rb") as fh:
+                raw = fh.read()
+            # Les noms de fichiers référencés apparaissent en clair dans le binaire .asm
+            for candidate in all_asm:
+                cname = os.path.basename(candidate).encode("utf-8", errors="ignore")
+                cname_lower = os.path.basename(candidate).lower().encode("utf-8", errors="ignore")
+                if cname in raw or cname_lower in raw:
+                    if os.path.normpath(candidate) != os.path.normpath(asm_path):
+                        referenced.add(os.path.normpath(candidate))
+        except Exception:
+            pass
+
+    roots = [p for p in all_asm if os.path.normpath(p) not in referenced]
+
+    # Fallback : si la détection échoue (tous référencés ou aucun), retourner tous
+    if not roots:
+        print("[WARN] Détection racines échouée — tous les .asm seront traités.")
+        return all_asm
+
+    return roots
+
+
+# ---------------------------------------------------------------------------
 # Export Excel
 # ---------------------------------------------------------------------------
 
-def build_excel(rows: list[dict], output_path: str):
+def build_excel(rows: list[dict], output_path: str, sheet_name: str = "Structure PDM"):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Structure PDM"
+    ws.title = sheet_name[:31]  # Excel limite à 31 caractères
 
     header_font  = Font(name="Arial", bold=True, size=10, color="FFFFFF")
     header_fill  = PatternFill("solid", start_color="2F4F8F")
@@ -502,7 +480,6 @@ def build_excel(rows: list[dict], output_path: str):
     )
     alt_fill = PatternFill("solid", start_color="EEF2F8")
 
-    # En-têtes
     for col_idx, col_name in enumerate(COLUMNS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
         cell.font      = header_font
@@ -512,7 +489,6 @@ def build_excel(rows: list[dict], output_path: str):
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = "A2"
 
-    # Données
     col_widths = {"designation": 40, "Attachments": 55, "date_creation_ori": 22}
     for row_idx, row_data in enumerate(rows, start=2):
         fill = alt_fill if row_idx % 2 == 0 else None
@@ -525,7 +501,6 @@ def build_excel(rows: list[dict], output_path: str):
             if fill:
                 cell.fill = fill
 
-    # Largeurs
     for col_idx, col_name in enumerate(COLUMNS, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = (
             col_widths.get(col_name, 14)
@@ -535,18 +510,68 @@ def build_excel(rows: list[dict], output_path: str):
     print(f"[EXCEL] Fichier sauvegardé : {output_path}")
 
 
+def build_excel_multi(data: dict[str, list[dict]], output_path: str):
+    """
+    Crée un Excel avec un onglet par assemblage.
+    data = { "NOM_ASM": [rows...], ... }
+    """
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)  # Supprimer la feuille vide par défaut
+
+    header_font  = Font(name="Arial", bold=True, size=10, color="FFFFFF")
+    header_fill  = PatternFill("solid", start_color="2F4F8F")
+    cell_border  = Border(
+        left=Side(style="thin", color="C0C0C0"),
+        right=Side(style="thin", color="C0C0C0"),
+        top=Side(style="thin", color="C0C0C0"),
+        bottom=Side(style="thin", color="C0C0C0"),
+    )
+    alt_fill = PatternFill("solid", start_color="EEF2F8")
+    col_widths = {"designation": 40, "Attachments": 55, "date_creation_ori": 22}
+
+    for asm_name, rows in data.items():
+        ws = wb.create_sheet(title=asm_name[:31])
+
+        for col_idx, col_name in enumerate(COLUMNS, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=col_name)
+            cell.font      = header_font
+            cell.fill      = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border    = cell_border
+        ws.row_dimensions[1].height = 30
+        ws.freeze_panes = "A2"
+
+        for row_idx, row_data in enumerate(rows, start=2):
+            fill = alt_fill if row_idx % 2 == 0 else None
+            for col_idx, col_name in enumerate(COLUMNS, start=1):
+                val = row_data.get(col_name, "")
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.font      = Font(name="Arial", size=9)
+                cell.border    = cell_border
+                cell.alignment = Alignment(vertical="center")
+                if fill:
+                    cell.fill = fill
+
+        for col_idx, col_name in enumerate(COLUMNS, start=1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = (
+                col_widths.get(col_name, 14)
+            )
+
+    wb.save(output_path)
+    print(f"[EXCEL] Fichier multi-onglets sauvegardé : {output_path}")
+
+
 # ---------------------------------------------------------------------------
-# Mode démo (sans Solid Edge)
+# Mode démo
 # ---------------------------------------------------------------------------
 
-def demo_rows() -> list[dict]:
-    """Retourne quelques lignes fictives pour tester l'UI sans Solid Edge."""
+def demo_rows(suffix: str = "") -> list[dict]:
     now = datetime.datetime.now().strftime("%d/%m/%Y 12:00:00 AM")
     samples = [
-        ("GB2100J",  "SUB_ASSY_A",  "ComposedOf", 0, "Canal sup. TB Ø47-16.5",  0,     0),
-        ("GB1331J",  "PART_A",      "ComposedOf", 1, "Anneau de canal taraudé", 0.12, 800),
-        ("GB21062J", "PART_A",      "ComposedOf", 1, "Tige Ø6 rayon 67.5",     0.05, 320),
-        ("GB2100J",  "CAD_DRAWING_A","Drawing",   0, "Plan canal sup. TB",      0,     0),
+        ("GB2100J",  "SUB_ASSY_A",   "ComposedOf", 0, "Canal sup. TB Ø47-16.5",  0,     0),
+        ("GB1331J",  "PART_A",       "ComposedOf", 1, "Anneau de canal taraudé", 0.12, 800),
+        ("GB21062J", "PART_A",       "ComposedOf", 1, "Tige Ø6 rayon 67.5",     0.05, 320),
+        ("GB2100J",  "CAD_DRAWING_A","Drawing",    0, "Plan canal sup. TB",      0,     0),
     ]
     rows = []
     for ref, cls, rel, lvl, desg, poids, vol in samples:
@@ -555,13 +580,13 @@ def demo_rows() -> list[dict]:
         entry["Level"]          = lvl
         entry["Relationship"]   = rel
         entry["Class"]          = cls
-        entry["ref_utilisat"]   = ref
+        entry["ref_utilisat"]   = ref + suffix
         entry["designation"]    = desg
         entry["quantite"]       = 1
         entry["poids"]          = poids or ""
         entry["volume3D"]       = vol or ""
         entry["date_creation_ori"] = now
-        entry["APLMC_pivot"]    = ref
+        entry["APLMC_pivot"]    = ref + suffix
         rows.append(entry)
     return rows
 
@@ -589,55 +614,125 @@ class SEExportApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Export SE → Andros PLM (PDM complet)")
-        self.root.geometry("680x590")
+        self.root.geometry("720x640")
 
         self.export_dir = os.path.join(os.path.expanduser("~"), "Documents", "Exports_PLM")
         os.makedirs(self.export_dir, exist_ok=True)
 
-        self.var_asm_path  = tk.StringVar()
-        self.var_out_file  = tk.StringVar(value="export_plm.xlsx")
-        self.var_visible   = tk.BooleanVar(value=False)
-        self.var_demo      = tk.BooleanVar(value=False)
-        self.var_aggregate = tk.BooleanVar(value=False)
+        # Variables
+        self.var_mode       = tk.StringVar(value="folder") # "file" ou "folder"
+        self.var_asm_path   = tk.StringVar()
+        self.var_folder     = tk.StringVar()
+        self.var_out_file   = tk.StringVar(value="export_plm.xlsx")
+        self.var_visible    = tk.BooleanVar(value=False)
+        self.var_demo       = tk.BooleanVar(value=False)
+        self.var_aggregate  = tk.BooleanVar(value=True)   # cumuler les quantités par défaut
+        self.var_recursive  = tk.BooleanVar(value=True)    # sous-dossiers récursif par défaut
 
         self._build_ui()
 
+    # ------------------------------------------------------------------
+    # Construction UI
+    # ------------------------------------------------------------------
+
     def _build_ui(self):
-        frm = ttk.LabelFrame(self.root, text="Configuration", padding=15)
-        frm.pack(fill=tk.X, padx=10, pady=10)
+        # --- Mode sélection ---
+        mode_frm = ttk.LabelFrame(self.root, text="Mode d'entrée", padding=10)
+        mode_frm.pack(fill=tk.X, padx=10, pady=(10, 0))
 
-        # Ligne 0 : fichier .asm
-        ttk.Label(frm, text="Fichier assemblage (.asm) :").grid(row=0, column=0, sticky=tk.W)
-        ttk.Entry(frm, textvariable=self.var_asm_path, width=45).grid(row=0, column=1, padx=5, pady=5)
-        ttk.Button(frm, text="Parcourir", command=self._browse_asm).grid(row=0, column=2, padx=5)
+        ttk.Radiobutton(mode_frm, text="Fichier .asm unique",
+                        variable=self.var_mode, value="file",
+                        command=self._refresh_mode).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(mode_frm, text="Dossier de projet (batch)",
+                        variable=self.var_mode, value="folder",
+                        command=self._refresh_mode).pack(side=tk.LEFT)
 
-        # Ligne 1 : nom fichier Excel
-        ttk.Label(frm, text="Fichier Excel de sortie :").grid(row=1, column=0, sticky=tk.W)
-        ttk.Entry(frm, textvariable=self.var_out_file, width=45).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        # --- Configuration ---
+        self.frm_config = ttk.LabelFrame(self.root, text="Configuration", padding=15)
+        self.frm_config.pack(fill=tk.X, padx=10, pady=8)
 
-        ttk.Label(frm, text=f"Dossier cible : {self.export_dir}",
-                  font=("", 8, "italic")).grid(row=2, column=1, sticky=tk.W, padx=5)
+        # Ligne fichier .asm
+        self.row_file = ttk.Frame(self.frm_config)
+        self.row_file.grid(row=0, column=0, sticky=tk.EW, pady=4)
+        ttk.Label(self.row_file, text="Fichier assemblage (.asm) :", width=28).pack(side=tk.LEFT)
+        ttk.Entry(self.row_file, textvariable=self.var_asm_path, width=42).pack(side=tk.LEFT, padx=4)
+        ttk.Button(self.row_file, text="Parcourir", command=self._browse_asm).pack(side=tk.LEFT)
 
-        # Options
-        opt = ttk.Frame(frm)
-        opt.grid(row=3, column=0, columnspan=3, pady=10, sticky=tk.W)
-        ttk.Checkbutton(opt, text="Rendre Solid Edge visible",  variable=self.var_visible  ).pack(side=tk.LEFT, padx=(0, 15))
-        ttk.Checkbutton(opt, text="Cumuler les quantités",      variable=self.var_aggregate).pack(side=tk.LEFT, padx=(0, 15))
-        ttk.Checkbutton(opt, text="Mode test (sans API SE)",    variable=self.var_demo     ).pack(side=tk.LEFT)
+        # Ligne dossier
+        self.row_folder = ttk.Frame(self.frm_config)
+        self.row_folder.grid(row=1, column=0, sticky=tk.EW, pady=4)
+        ttk.Label(self.row_folder, text="Dossier du projet :", width=28).pack(side=tk.LEFT)
+        ttk.Entry(self.row_folder, textvariable=self.var_folder, width=42).pack(side=tk.LEFT, padx=4)
+        ttk.Button(self.row_folder, text="Parcourir", command=self._browse_folder).pack(side=tk.LEFT)
+
+        # Options dossier (récursif)
+        self.row_folder_opts = ttk.Frame(self.frm_config)
+        self.row_folder_opts.grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Checkbutton(self.row_folder_opts, text="Sous-dossiers (récursif)",
+                        variable=self.var_recursive).pack(side=tk.LEFT, padx=(28, 15))
+
+        # Nom du fichier de sortie
+        row_out = ttk.Frame(self.frm_config)
+        row_out.grid(row=3, column=0, sticky=tk.EW, pady=4)
+        ttk.Label(row_out, text="Fichier Excel de sortie :", width=28).pack(side=tk.LEFT)
+        ttk.Entry(row_out, textvariable=self.var_out_file, width=42).pack(side=tk.LEFT, padx=4)
+
+        self.lbl_target = ttk.Label(self.frm_config,
+                  text=f"Dossier cible : {self.export_dir}",
+                  font=("", 8, "italic"))
+        self.lbl_target.grid(row=4, column=0, sticky=tk.W, pady=(0, 6))
+
+        # Options générales
+        opt = ttk.Frame(self.frm_config)
+        opt.grid(row=5, column=0, sticky=tk.W, pady=4)
+        ttk.Checkbutton(opt, text="Rendre Solid Edge visible",
+                        variable=self.var_visible).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Checkbutton(opt, text="Cumuler les quantités",
+                        variable=self.var_aggregate).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Checkbutton(opt, text="Mode test (sans API SE)",
+                        variable=self.var_demo).pack(side=tk.LEFT)
 
         # Bouton lancer
-        self.btn_run = ttk.Button(self.root, text="Lancer l'extraction", command=self._run_thread)
-        self.btn_run.pack(pady=5)
+        self.btn_run = ttk.Button(self.root, text="Lancer l'extraction",
+                                  command=self._run_thread)
+        self.btn_run.pack(pady=6)
 
         # Console
         console_frm = ttk.LabelFrame(self.root, text="Logs", padding=5)
-        console_frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        console_frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
         self.console = scrolledtext.ScrolledText(
             console_frm, state="disabled",
             bg="#1e1e1e", fg="#d4d4d4", font=("Consolas", 9)
         )
         self.console.pack(fill=tk.BOTH, expand=True)
         sys.stdout = ConsoleRedirector(self.console)
+
+        self._refresh_mode()
+
+    def _refresh_mode(self):
+        """Affiche/masque les lignes selon le mode sélectionné."""
+        is_folder = (self.var_mode.get() == "folder")
+        if is_folder:
+            self.row_file.grid_remove()
+            self.row_folder.grid()
+            self.row_folder_opts.grid()
+            # Mettre à jour le label du dossier cible
+            folder = self.var_folder.get().strip('"')
+            if folder:
+                folder_name = os.path.basename(folder.rstrip("/\\"))
+                export_dir = os.path.join(os.path.expanduser("~"), "Documents", "Exports_PLM", folder_name)
+                self.lbl_target.config(text=f"Dossier cible : {export_dir}")
+            else:
+                self.lbl_target.config(text=f"Dossier cible : {self.export_dir}")
+        else:
+            self.row_file.grid()
+            self.row_folder.grid_remove()
+            self.row_folder_opts.grid_remove()
+            self.lbl_target.config(text=f"Dossier cible : {self.export_dir}")
+
+    # ------------------------------------------------------------------
+    # Browse
+    # ------------------------------------------------------------------
 
     def _browse_asm(self):
         path = filedialog.askopenfilename(
@@ -649,11 +744,31 @@ class SEExportApp:
             name = os.path.splitext(os.path.basename(path))[0]
             self.var_out_file.set(f"{name}_PLM.xlsx")
 
+    def _browse_folder(self):
+        folder = filedialog.askdirectory(title="Sélectionner le dossier du projet SE")
+        if folder:
+            self.var_folder.set(folder)
+            base = os.path.basename(folder.rstrip("/\\"))
+            self.var_out_file.set(f"{base}_PLM.xlsx")
+            # Mettre à jour le label du dossier cible
+            export_dir = os.path.join(os.path.expanduser("~"), "Documents", "Exports_PLM", base)
+            self.lbl_target.config(text=f"Dossier cible : {export_dir}")
+
+    # ------------------------------------------------------------------
+    # Lancement
+    # ------------------------------------------------------------------
+
     def _run_thread(self):
-        asm_path = self.var_asm_path.get().strip('"')
-        if not self.var_demo.get() and not os.path.isfile(asm_path):
-            messagebox.showwarning("Erreur", "Sélectionnez un fichier .asm valide.")
-            return
+        if self.var_mode.get() == "file":
+            path = self.var_asm_path.get().strip('"')
+            if not self.var_demo.get() and not os.path.isfile(path):
+                messagebox.showwarning("Erreur", "Sélectionnez un fichier .asm valide.")
+                return
+        else:
+            folder = self.var_folder.get().strip('"')
+            if not self.var_demo.get() and not os.path.isdir(folder):
+                messagebox.showwarning("Erreur", "Sélectionnez un dossier valide.")
+                return
 
         self.btn_run.configure(state="disabled", text="Travail en cours…")
         self.console.configure(state="normal")
@@ -662,34 +777,115 @@ class SEExportApp:
         threading.Thread(target=self._process, daemon=True).start()
 
     def _process(self):
-        asm_path = self.var_asm_path.get().strip('"')
         filename = self.var_out_file.get()
         if not filename.endswith(".xlsx"):
             filename += ".xlsx"
-        out_path = os.path.join(self.export_dir, filename)
+        
+        # Déterminer le dossier d'export selon le mode
+        if self.var_mode.get() == "folder":
+            # En mode dossier, créer un sous-dossier avec le nom du dossier choisi
+            folder_path = self.var_folder.get().strip('"')
+            folder_name = os.path.basename(folder_path.rstrip("/\\"))
+            export_dir = os.path.join(os.path.expanduser("~"), "Documents", "Exports_PLM", folder_name)
+            os.makedirs(export_dir, exist_ok=True)
+        else:
+            # En mode fichier, utiliser le dossier d'export par défaut
+            export_dir = self.export_dir
+        
+        out_path = os.path.join(export_dir, filename)
 
         se_reader = None
         try:
+            # ----------------------------------------------------------------
+            # Mode démo
+            # ----------------------------------------------------------------
             if self.var_demo.get() or not WIN32_AVAILABLE:
                 print("[TEST] Mode démo — données fictives.")
-                rows = demo_rows()
-            else:
+                if self.var_mode.get() == "folder":
+                    data = {
+                        "GB2100J":  demo_rows(""),
+                        "GB3000K":  demo_rows("_B"),
+                    }
+                    # Toujours générer un fichier par assemblage
+                    for asm_name, rows in data.items():
+                        p = os.path.join(
+                            export_dir,
+                            f"{asm_name}_PLM.xlsx"
+                        )
+                        build_excel(rows, p, sheet_name=asm_name)
+                    print(f"[OK] {len(data)} fichiers Excel générés.")
+                    messagebox.showinfo("Terminé", f"{len(data)} fichiers Excel générés dans :\n{export_dir}")
+                    return
+                else:
+                    rows = demo_rows()
+                    build_excel(rows, out_path)
+
+            # ----------------------------------------------------------------
+            # Mode réel — fichier unique
+            # ----------------------------------------------------------------
+            elif self.var_mode.get() == "file":
+                asm_path = self.var_asm_path.get().strip('"')
                 se_reader = SolidEdgeReader(visible=self.var_visible.get())
                 se_reader.start()
 
                 extractor = PDMExtractor(se_reader)
                 extractor.extract(asm_path)
-
                 rows = (extractor.aggregate_quantities()
                         if self.var_aggregate.get()
                         else extractor.rows)
 
-            if not rows:
-                print("[WARN] Aucune donnée extraite.")
+                if not rows:
+                    print("[WARN] Aucune donnée extraite.")
+                    return
+                print(f"\n[INFO] {len(rows)} lignes à exporter.")
+                build_excel(rows, out_path)
+
+            # ----------------------------------------------------------------
+            # Mode réel — dossier batch
+            # ----------------------------------------------------------------
+            else:
+                folder = self.var_folder.get().strip('"')
+                asm_list = find_root_assemblies(folder, recursive=self.var_recursive.get())
+
+                if not asm_list:
+                    print("[WARN] Aucun fichier .asm trouvé dans le dossier.")
+                    messagebox.showwarning("Avertissement", "Aucun fichier .asm trouvé.")
+                    return
+
+                print(f"\n[BATCH] {len(asm_list)} assemblage(s) racine détecté(s) :")
+                for p in asm_list:
+                    print(f"  • {os.path.basename(p)}")
+
+                se_reader = SolidEdgeReader(visible=self.var_visible.get())
+                se_reader.start()
+
+                all_data: dict[str, list[dict]] = {}
+                for asm_path in asm_list:
+                    asm_name = os.path.splitext(os.path.basename(asm_path))[0]
+                    print(f"\n{'='*60}")
+                    print(f"[BATCH] Traitement : {asm_name}")
+                    print(f"{'='*60}")
+
+                    extractor = PDMExtractor(se_reader)
+                    rows = extractor.extract(asm_path)
+                    if self.var_aggregate.get():
+                        rows = extractor.aggregate_quantities()
+
+                    all_data[asm_name] = rows
+                    print(f"[BATCH] {asm_name} → {len(rows)} lignes")
+
+                total = sum(len(r) for r in all_data.values())
+                print(f"\n[INFO] Total : {total} lignes dans {len(all_data)} assemblage(s).")
+
+                # Toujours générer un Excel par assemblage
+                for asm_name, rows in all_data.items():
+                    p = os.path.join(export_dir, f"{asm_name}_PLM.xlsx")
+                    build_excel(rows, p, sheet_name=asm_name)
+                print(f"\n[OK] {len(all_data)} fichiers Excel générés.")
+                messagebox.showinfo("Terminé",
+                    f"{len(all_data)} fichiers Excel générés dans :\n{export_dir}")
                 return
 
-            print(f"\n[INFO] {len(rows)} lignes à exporter.")
-            build_excel(rows, out_path)
             print("\n[OK] Export terminé avec succès.")
             messagebox.showinfo("Terminé", f"Export réussi !\n{out_path}")
 
