@@ -16,11 +16,12 @@ class ExtractionThread(QThread):
     log_signal = pyqtSignal(str, str)
     finished_signal = pyqtSignal()
     
-    def __init__(self, chemin_asm, dossier_sortie, nom_sortie):
+    def __init__(self, chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None):
         super().__init__()
         self.chemin_asm = chemin_asm
         self.dossier_sortie = dossier_sortie
         self.nom_sortie = nom_sortie
+        self.dossier_dft = dossier_dft
     
     def run(self):
         try:
@@ -29,7 +30,7 @@ class ExtractionThread(QThread):
             self.log_signal.emit("=" * 60, 'info')
             
             self.log_signal.emit("\n--- Indexation des plans (.dft) ---", 'info')
-            index_plans = indexer_les_plans_projet_entier(self.chemin_asm)
+            index_plans = indexer_les_plans_projet_entier(self.chemin_asm, self.dossier_dft)
             self.log_signal.emit(f"-> {len(index_plans)} plan(s) détecté(s).", 'info')
             
             self.log_signal.emit("\nOuverture de Solid Edge...", 'info')
@@ -126,10 +127,24 @@ class ExtractionThread(QThread):
             explorer_occurrences(doc_racine.Occurrences, 1)
             
             # --- A LA FIN : AJOUT DES PLANS EN LEVEL 0 ET LEURS 3D EN LEVEL 1 ---
+            self.log_signal.emit("\nExtraction métadonnées des plans...", 'info')
             plans_deja_traites = set()
             for item in liste_plans_a_rajouter:
                 if item["dft_path"] not in plans_deja_traites:
-                    ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A")
+                    # Ouvrir le fichier DFT pour extraire ses métadonnées
+                    meta_dft = {"designation": "", "revision": "1", "version": "-"}
+                    try:
+                        doc_dft = app.Documents.Open(item["dft_path"])
+                        # Debug: activer pour le premier fichier
+                        if len(plans_deja_traites) == 0:
+                            meta_dft = extraire_metadonnees(doc_dft, debug=True)
+                        else:
+                            meta_dft = extraire_metadonnees(doc_dft)
+                        doc_dft.Close()
+                    except Exception as e:
+                        self.log_signal.emit(f"  Erreur lecture {item['dft_nom']}: {e}", 'warning')
+                    
+                    ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], meta_dft["designation"], meta_dft["version"])
                     ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
                     plans_deja_traites.add(item["dft_path"])
             
@@ -210,6 +225,17 @@ class PLMExtractorGUI(QMainWindow):
         asm_layout.addWidget(btn_parcourir)
         main_layout.addLayout(asm_layout)
         
+        dft_layout = QHBoxLayout()
+        dft_layout.addWidget(QLabel("Dossier plans (.dft) :"))
+        self.dossier_dft_edit = QLineEdit()
+        self.dossier_dft_edit.setReadOnly(True)
+        self.dossier_dft_edit.setPlaceholderText("Optionnel")
+        dft_layout.addWidget(self.dossier_dft_edit)
+        btn_parcourir_dft = QPushButton("Parcourir...")
+        btn_parcourir_dft.clicked.connect(self.choisir_dossier_dft)
+        dft_layout.addWidget(btn_parcourir_dft)
+        main_layout.addLayout(dft_layout)
+        
         sortie_layout = QHBoxLayout()
         sortie_layout.addWidget(QLabel("Nom de sortie :"))
         self.nom_sortie_edit = QLineEdit(f"Export_PLM_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
@@ -245,6 +271,16 @@ class PLMExtractorGUI(QMainWindow):
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.nom_sortie_edit.setText(f"Export_PLM_{nom_asm}_{timestamp}.xlsx")
     
+    def choisir_dossier_dft(self):
+        dossier = QFileDialog.getExistingDirectory(
+            self,
+            "Sélectionnez le dossier contenant les plans (.dft)",
+            ""
+        )
+        if dossier:
+            self.dossier_dft_edit.setText(dossier)
+            self.log(f"Dossier plans sélectionné : {dossier}", 'info')
+    
     def log(self, message, msg_type='info'):
         cursor = self.console.textCursor()
         cursor.movePosition(QTextCursor.End)
@@ -276,7 +312,8 @@ class PLMExtractorGUI(QMainWindow):
         self.btn_extraire.setEnabled(False)
         self.btn_extraire.setText("Extraction en cours...")
         
-        self.thread = ExtractionThread(chemin_asm, self.dossier_sortie, self.nom_sortie_edit.text())
+        dossier_dft = self.dossier_dft_edit.text() if self.dossier_dft_edit.text() else None
+        self.thread = ExtractionThread(chemin_asm, self.dossier_sortie, self.nom_sortie_edit.text(), dossier_dft)
         self.thread.log_signal.connect(self.log)
         self.thread.finished_signal.connect(self.extraction_terminee)
         self.thread.start()

@@ -15,40 +15,138 @@ def demander_fichier_asm():
         filetypes=[("Assemblage Solid Edge", "*.asm")]
     )
 
-def indexer_les_plans_projet_entier(chemin_asm_initial):
-    """Parcourt le dossier et les sous-dossiers pour trouver tous les plans .dft."""
+def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None):
+    """Parcourt le dossier et les sous-dossiers pour trouver tous les plans .dft.
+    Toujours remonte l'arborescence à partir du fichier ASM.
+    Si dossier_dft est fourni, recherche également dans ce dossier et ses sous-dossiers."""
     index = {}
     if not chemin_asm_initial: return index
     
-    dossier_asm = os.path.dirname(chemin_asm_initial)
-    racine_projet = os.path.dirname(dossier_asm)
+    # Toujours remonter l'arborescence depuis le fichier ASM (4 niveaux)
+    racine_projet = chemin_asm_initial
+    for _ in range(4):
+        racine_projet = os.path.dirname(racine_projet)
+        if not racine_projet:
+            break
 
     print(f"--- Indexation globale des plans (.dft) ---")
     print(f"Scan en cours : {racine_projet}")
     
-    for dossier, _, fichiers in os.walk(racine_projet):
-        for fichier in fichiers:
-            if fichier.lower().endswith('.dft'):
-                nom_base = os.path.splitext(fichier)[0].lower()
-                index[nom_base] = os.path.join(dossier, fichier)
+    dossiers_a_scanner = [racine_projet]
+    if dossier_dft and os.path.exists(dossier_dft):
+        print(f"Dossier additionnel : {dossier_dft}")
+        dossiers_a_scanner.append(dossier_dft)
+    
+    for racine in dossiers_a_scanner:
+        for dossier, _, fichiers in os.walk(racine):
+            for fichier in fichiers:
+                if fichier.lower().endswith('.dft'):
+                    nom_base = os.path.splitext(fichier)[0].lower()
+                    index[nom_base] = os.path.join(dossier, fichier)
                 
     print(f"-> {len(index)} plan(s) détecté(s).")
     return index
 
-def extraire_metadonnees(doc_obj):
+def lister_proprietes(doc_obj):
+    """Liste toutes les propriétés disponibles pour le débogage."""
+    try:
+        print(f"  --- Propriétés disponibles ---")
+        print(f"  Type de document: {type(doc_obj)}")
+        
+        # Lister les attributs principaux
+        attrs = [attr for attr in dir(doc_obj) if not attr.startswith('_')]
+        print(f"  Attributs: {attrs[:20]}...")  # Limiter l'affichage
+        
+        # Essayer Properties (au lieu de PropertySets)
+        if hasattr(doc_obj, 'Properties'):
+            print(f"  Properties disponible")
+            try:
+                for prop_set in doc_obj.Properties:
+                    nom_set = prop_set.Name if hasattr(prop_set, 'Name') else "Sans nom"
+                    print(f"    PropertySet: {nom_set}")
+                    if nom_set == "Custom":
+                        print(f"      Propriétés Custom:")
+                        for prop in prop_set:
+                            nom = prop.Name if hasattr(prop, 'Name') else "Sans nom"
+                            valeur = prop.Value if hasattr(prop, 'Value') else ""
+                            print(f"        - {nom}: {valeur}")
+            except Exception as e:
+                print(f"    Erreur Properties: {e}")
+        
+        # Essayer PropertySets
+        if hasattr(doc_obj, 'PropertySets'):
+            print(f"  PropertySets disponible")
+            try:
+                for prop_set in doc_obj.PropertySets:
+                    print(f"  PropertySet: {prop_set.Name if hasattr(prop_set, 'Name') else 'Unknown'}")
+                    for prop in prop_set:
+                        nom = prop.Name if prop.Name else "Sans nom"
+                        valeur = prop.Value if prop.Value is not None else ""
+                        print(f"    - {nom}: {valeur}")
+            except Exception as e:
+                print(f"    Erreur PropertySets: {e}")
+        
+        # Essayer SummaryInformation
+        if hasattr(doc_obj, 'SummaryInformation'):
+            print(f"  SummaryInformation disponible")
+            try:
+                print(f"    Title: {doc_obj.SummaryInformation.Title}")
+            except: pass
+    except Exception as e:
+        print(f"  Erreur listing propriétés: {e}")
+
+def extraire_metadonnees(doc_obj, debug=False):
     """Récupère le titre, la version et force la révision à 1 depuis Solid Edge."""
     meta = {"designation": "", "revision": "1", "version": "-"}
+    
+    if debug:
+        lister_proprietes(doc_obj)
+    
     try:
         meta["designation"] = doc_obj.SummaryInformation.Title
-        try:
-            # Récupération de la version
-            version_val = doc_obj.ProjectInformation.Version
-            if version_val and str(version_val).strip() != "":
-                meta["version"] = str(version_val).strip()
-        except:
-            pass
     except:
         pass
+    
+    try:
+        # Récupération de l'attribut "indice de modification"
+        # Essayer plusieurs noms possibles (français et anglais)
+        noms_possibles = [
+            "indice de modification",
+            "Indice de modification",
+            "revision index",
+            "Revision Index",
+            "modification index",
+            "Modification Index",
+            "index",
+            "Index"
+        ]
+        
+        # Méthode 1: Properties -> Custom PropertySet
+        if hasattr(doc_obj, 'Properties'):
+            for prop_set in doc_obj.Properties:
+                if hasattr(prop_set, 'Name') and prop_set.Name == "Custom":
+                    for prop in prop_set:
+                        nom_prop = prop.Name.lower() if hasattr(prop, 'Name') and prop.Name else ""
+                        if nom_prop in [n.lower() for n in noms_possibles]:
+                            if hasattr(prop, 'Value') and prop.Value and str(prop.Value).strip() != "":
+                                meta["version"] = str(prop.Value).strip()
+                                print(f"  -> Version trouvée: {meta['version']} (propriété: {prop.Name})")
+                                return meta
+        
+        # Méthode 2: PropertySets standard
+        if hasattr(doc_obj, 'PropertySets'):
+            for prop_set in doc_obj.PropertySets:
+                for prop in prop_set:
+                    nom_prop = prop.Name.lower() if prop.Name else ""
+                    if nom_prop in [n.lower() for n in noms_possibles]:
+                        if prop.Value and str(prop.Value).strip() != "":
+                            meta["version"] = str(prop.Value).strip()
+                            print(f"  -> Version trouvée: {meta['version']} (propriété: {prop.Name})")
+                            return meta
+            
+    except Exception as e:
+        print(f"  -> Erreur lecture version: {e}")
+    
     return meta
 
 def determiner_classe(nom_fichier, est_projet=False):
@@ -170,12 +268,22 @@ def lancer_extraction_plm():
 
         # --- A LA FIN : AJOUT DES PLANS EN LEVEL 0 ET LEURS 3D EN LEVEL 1 ---
         print("Ajout des plans (DFT) à la fin du fichier...")
+        print("Extraction métadonnées des plans...")
         plans_deja_traites = set()
 
         for item in liste_plans_a_rajouter:
             if item["dft_path"] not in plans_deja_traites:
+                # Ouvrir le fichier DFT pour extraire ses métadonnées
+                meta_dft = {"designation": "", "revision": "1", "version": "-"}
+                try:
+                    doc_dft = app.Documents.Open(item["dft_path"])
+                    meta_dft = extraire_metadonnees(doc_dft)
+                    doc_dft.Close()
+                except Exception as e:
+                    print(f"  Erreur lecture {item['dft_nom']}: {e}")
+                
                 # Le plan (DFT) est le Parent (Level 0)
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A")
+                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], meta_dft["designation"], meta_dft["version"])
                 # Le fichier 3D associé devient l'enfant (Level 1)
                 ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
                 plans_deja_traites.add(item["dft_path"])
