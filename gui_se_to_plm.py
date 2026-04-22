@@ -186,7 +186,15 @@ class PLMExtractorGUI(QMainWindow):
         self.setGeometry(100, 100, 800, 600)
         self.extraction_en_cours = False
         
+        self.appliquer_style()
         self.creer_interface()
+    
+    def appliquer_style(self):
+        # On charge le fichier de style
+        chemin_style = os.path.join(os.path.dirname(__file__), 'style.qss')
+        if os.path.exists(chemin_style):
+            with open(chemin_style, 'r', encoding='utf-8') as f:
+                self.setStyleSheet(f.read())
         
     def creer_interface(self):
         # On crée le widget principal
@@ -237,14 +245,6 @@ class PLMExtractorGUI(QMainWindow):
         
         self.console = QTextEdit()
         self.console.setReadOnly(True)
-        self.console.setStyleSheet("""
-            QTextEdit {
-                background-color: #f5f5f5;
-                border: 1px solid #ccc;
-                font-family: Consolas, monospace;
-                font-size: 10pt;
-            }
-        """)
         main_layout.addWidget(self.console)
     
     def choisir_fichier_asm(self):
