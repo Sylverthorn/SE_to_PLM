@@ -7,7 +7,7 @@ from tkinter import filedialog
 from openpyxl.styles import Font, PatternFill, Alignment
 
 def demander_fichier_asm():
-    """Ouvre l'explorateur Windows pour choisir l'ASM."""
+    """Ouvre l'explorateur pour choisir le fichier ASM."""
     root = tk.Tk()
     root.withdraw()
     return filedialog.askopenfilename(
@@ -16,7 +16,7 @@ def demander_fichier_asm():
     )
 
 def indexer_les_plans_projet_entier(chemin_asm_initial):
-    """Scanne le dossier parent et les sous-dossiers pour lister tous les .dft."""
+    """Parcourt le dossier et les sous-dossiers pour trouver tous les plans .dft."""
     index = {}
     if not chemin_asm_initial: return index
     
@@ -36,7 +36,7 @@ def indexer_les_plans_projet_entier(chemin_asm_initial):
     return index
 
 def extraire_metadonnees(doc_obj):
-    """Récupère les propriétés Titre et Révision de Solid Edge."""
+    """Récupère le titre et la révision depuis Solid Edge."""
     meta = {"designation": "", "revision": ""}
     try:
         # Propriétés standard de Solid Edge
@@ -47,7 +47,7 @@ def extraire_metadonnees(doc_obj):
     return meta
 
 def determiner_classe(nom_fichier, est_projet=False):
-    """Définit la classe PLM selon l'extension."""
+    """Détermine la classe PLM en fonction de l'extension du fichier."""
     if est_projet: return "Projet"
     ext = os.path.splitext(nom_fichier)[1].lower()
     if ext == '.asm': return "ASM"
@@ -57,16 +57,16 @@ def determiner_classe(nom_fichier, est_projet=False):
 
 def lancer_extraction_plm():
     try:
-        # 1. Sélection et Indexation
+        # On sélectionne le fichier et on indexe les plans
         chemin_asm = demander_fichier_asm()
         if not chemin_asm: return
 
         index_plans = indexer_les_plans_projet_entier(chemin_asm)
 
-        # 2. Connexion Solid Edge
+        # On se connecte à Solid Edge
         print("\nOuverture de Solid Edge...")
         app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
-        app.Visible = True 
+        app.Visible = False 
         doc_racine = app.Documents.Open(chemin_asm)
         time.sleep(3) 
 
@@ -77,15 +77,15 @@ def lancer_extraction_plm():
         def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1):
             nonlocal compteur_ordre
             
-            # On essaye de lire les propriétés si le fichier est accessible
+            # On essaie de lire les propriétés si le fichier est accessible
             designation = ""
             rev = ""
             ref_util = os.path.splitext(nom_fichier)[0]
             
             if chemin_complet and os.path.exists(chemin_complet):
                 try:
-                    # Pour les plans ou documents déjà ouverts
-                    # (Note: Lire chaque petit .par ralentit le script, on peut limiter au niveau 0)
+                    # Pour les documents déjà ouverts
+                    # (Note: lire chaque .par ralentit, on peut se limiter au niveau 0)
                     pass 
                 except: pass
 
@@ -110,8 +110,8 @@ def lancer_extraction_plm():
                         nom_reel = os.path.basename(path_reel)
                     except:
                         nom_reel = occ.Name.split(':')[0]
-                        # Fallback : essayer de trouver le chemin si la pièce est inactive
-                        # (Optionnel : demande plus de ressources)
+                        # Au cas où la pièce est inactive, on essaie de trouver le chemin
+                        # (Optionnel: demande plus de ressources)
 
                     if nom_reel not in dict_occ:
                         dict_occ[nom_reel] = {"qte": 1, "obj": occ, "chemin": path_reel}
@@ -123,20 +123,20 @@ def lancer_extraction_plm():
                 stats["3d"] += 1
                 classe_3d = determiner_classe(nom)
                 
-                # Récupération meta si possible
+                # On récupère les métadonnées si possible
                 meta = {"designation": "", "revision": ""}
                 try:
                     meta = extraire_metadonnees(data["obj"].OccurrenceDocument)
                 except: pass
 
-                # Ligne 3D
+                # On ajoute la ligne 3D
                 lignes_excel.append([
                     niveau, "ComposedOf", compteur_ordre, data["qte"], "", "", nom, 
                     classe_3d, os.path.splitext(nom)[0], "", meta["revision"], meta["designation"], "", data["chemin"]
                 ])
                 compteur_ordre += 1
                 
-                # Ligne Drawing
+                # On ajoute la ligne du plan si ça existe
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
                 if nom_sans_ext in index_plans:
                     chemin_dft = index_plans[nom_sans_ext]
@@ -147,10 +147,10 @@ def lancer_extraction_plm():
                     try: explorer_occurrences(data["obj"].OccurrenceDocument.Occurrences, niveau + 1)
                     except: pass
 
-        # --- EXECUTION ---
+        # On lance l'analyse
         print("\nAnalyse de la structure...")
         
-        # Racine (Lvl 0)
+        # On traite le fichier racine
         meta_root = extraire_metadonnees(doc_racine)
         nom_root = os.path.basename(doc_racine.FullName)
         lignes_excel.append([
@@ -159,7 +159,7 @@ def lancer_extraction_plm():
         ])
         compteur_ordre += 1
 
-        # Plan Racine
+        # On regarde si y a un plan pour la racine
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
         if nom_root_pur in index_plans:
             path_dft_root = index_plans[nom_root_pur]
@@ -168,7 +168,7 @@ def lancer_extraction_plm():
 
         explorer_occurrences(doc_racine.Occurrences, 1)
 
-        # --- EXCEL ---
+        # On crée le fichier Excel
         print("Génération du fichier...")
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -199,11 +199,11 @@ def lancer_extraction_plm():
         
         nom_out = f"Export_PLM_{int(time.time())}.xlsx"
         wb.save(nom_out)
-        print(f"\n✅ Fichier généré : {nom_out}")
-        print(f"📊 3D: {stats['3d']} | Plans: {stats['2d']}")
+        print(f"\nFichier généré : {nom_out}")
+        print(f"3D: {stats['3d']} | Plans: {stats['2d']}")
 
     except Exception as e:
-        print(f"\n❌ Erreur : {e}")
+        print(f"\nErreur : {e}")
 
 if __name__ == "__main__":
     lancer_extraction_plm()

@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QTextCursor, QColor
 
-# Importer les fonctions du fichier se_to_plm.py
+# On importe les fonctions utiles depuis se_to_plm.py
 from se_to_plm import indexer_les_plans_projet_entier, extraire_metadonnees, determiner_classe
 import win32com.client
 import openpyxl
@@ -30,15 +30,15 @@ class ExtractionThread(QThread):
             self.log_signal.emit("Début de l'extraction PLM", 'info')
             self.log_signal.emit("=" * 60, 'info')
             
-            # 1. Indexation des plans
+            # On commence par indexer les plans
             self.log_signal.emit("\n--- Indexation des plans (.dft) ---", 'info')
             index_plans = indexer_les_plans_projet_entier(self.chemin_asm)
             self.log_signal.emit(f"-> {len(index_plans)} plan(s) détecté(s).", 'info')
             
-            # 2. Connexion Solid Edge
+            # On se connecte à Solid Edge
             self.log_signal.emit("\nOuverture de Solid Edge...", 'info')
             app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
-            app.Visible = True
+            app.Visible = False
             doc_racine = app.Documents.Open(self.chemin_asm)
             time.sleep(3)
             self.log_signal.emit("Solid Edge connecté.", 'success')
@@ -106,10 +106,10 @@ class ExtractionThread(QThread):
                         try: explorer_occurrences(data["obj"].OccurrenceDocument.Occurrences, niveau + 1)
                         except: pass
             
-            # --- EXECUTION ---
+            # On lance l'analyse
             self.log_signal.emit("\nAnalyse de la structure...", 'info')
             
-            # Racine (Lvl 0)
+            # On traite le fichier racine
             meta_root = extraire_metadonnees(doc_racine)
             nom_root = os.path.basename(doc_racine.FullName)
             lignes_excel.append([
@@ -118,7 +118,7 @@ class ExtractionThread(QThread):
             ])
             compteur_ordre += 1
             
-            # Plan Racine
+            # On regarde si y a un plan pour la racine
             nom_root_pur = os.path.splitext(nom_root)[0].lower()
             if nom_root_pur in index_plans:
                 path_dft_root = index_plans[nom_root_pur]
@@ -129,7 +129,7 @@ class ExtractionThread(QThread):
             
             self.log_signal.emit(f"Analyse terminée : {stats['3d']} fichiers 3D, {stats['2d']} plans", 'success')
             
-            # --- EXCEL ---
+            # On crée le fichier Excel
             self.log_signal.emit("\nGénération du fichier Excel...", 'info')
             wb = openpyxl.Workbook()
             ws = wb.active
@@ -158,7 +158,7 @@ class ExtractionThread(QThread):
                     except: pass
                 ws.column_dimensions[col[0].column_letter].width = max_length + 2
             
-            # Sauvegarder avec le nom personnalisé
+            # On sauvegarde avec le nom choisi
             nom_sortie = self.nom_sortie
             if not nom_sortie.endswith('.xlsx'):
                 nom_sortie += '.xlsx'
@@ -166,13 +166,13 @@ class ExtractionThread(QThread):
             chemin_complet = os.path.join(self.dossier_sortie, nom_sortie)
             wb.save(chemin_complet)
             
-            self.log_signal.emit(f"\n✅ Fichier généré : {chemin_complet}", 'success')
-            self.log_signal.emit(f"📊 3D: {stats['3d']} | Plans: {stats['2d']}", 'success')
+            self.log_signal.emit(f"\nFichier généré : {chemin_complet}", 'success')
+            self.log_signal.emit(f"3D: {stats['3d']} | Plans: {stats['2d']}", 'success')
             self.log_signal.emit("=" * 60, 'info')
             self.log_signal.emit("Extraction terminée avec succès !", 'success')
             
         except Exception as e:
-            self.log_signal.emit(f"\n❌ Erreur : {e}", 'error')
+            self.log_signal.emit(f"\nErreur : {e}", 'error')
             self.log_signal.emit("=" * 60, 'error')
         
         finally:
@@ -189,15 +189,15 @@ class PLMExtractorGUI(QMainWindow):
         self.creer_interface()
         
     def creer_interface(self):
-        # Widget central
+        # On crée le widget principal
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Layout principal
+        # On met en place le layout
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(10)
         
-        # --- Section Fichier ASM ---
+        # Section pour le fichier ASM
         asm_layout = QHBoxLayout()
         asm_layout.addWidget(QLabel("Fichier ASM :"))
         
@@ -211,7 +211,7 @@ class PLMExtractorGUI(QMainWindow):
         
         main_layout.addLayout(asm_layout)
         
-        # --- Section Nom de sortie ---
+        # Section pour le nom de sortie
         sortie_layout = QHBoxLayout()
         sortie_layout.addWidget(QLabel("Nom de sortie :"))
         
@@ -220,19 +220,19 @@ class PLMExtractorGUI(QMainWindow):
         
         main_layout.addLayout(sortie_layout)
         
-        # --- Dossier de sortie ---
+        # Dossier où on va sauvegarder
         self.dossier_sortie = os.path.join(os.path.expanduser("~"), "Documents", "Exports_PLM")
         lbl_dossier = QLabel(f"Dossier : {self.dossier_sortie}")
         lbl_dossier.setStyleSheet("color: gray; font-style: italic;")
         main_layout.addWidget(lbl_dossier)
         
-        # --- Bouton d'extraction ---
+        # Bouton pour lancer
         self.btn_extraire = QPushButton("Lancer l'extraction")
         self.btn_extraire.clicked.connect(self.lancer_extraction)
         self.btn_extraire.setMinimumHeight(40)
         main_layout.addWidget(self.btn_extraire)
         
-        # --- Console de progression ---
+        # Zone pour voir ce qui se passe
         main_layout.addWidget(QLabel("Console de progression :"))
         
         self.console = QTextEdit()
@@ -258,7 +258,7 @@ class PLMExtractorGUI(QMainWindow):
             self.chemin_asm_edit.setText(chemin)
             self.log(f"Fichier sélectionné : {chemin}", 'info')
             
-            # Mettre à jour le nom de sortie avec le nom du fichier ASM
+            # On met à jour le nom de sortie avec celui du fichier ASM
             nom_asm = os.path.splitext(os.path.basename(chemin))[0]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.nom_sortie_edit.setText(f"Export_PLM_{nom_asm}_{timestamp}.xlsx")
@@ -295,15 +295,15 @@ class PLMExtractorGUI(QMainWindow):
             QMessageBox.critical(self, "Erreur", "Le fichier ASM sélectionné n'existe pas.")
             return
         
-        # Créer le dossier de sortie s'il n'existe pas
+        # On crée le dossier de sortie si besoin
         os.makedirs(self.dossier_sortie, exist_ok=True)
         
-        # Désactiver le bouton
+        # On désactive le bouton pendant le traitement
         self.extraction_en_cours = True
         self.btn_extraire.setEnabled(False)
         self.btn_extraire.setText("Extraction en cours...")
         
-        # Lancer l'extraction dans un thread séparé
+        # On lance l'extraction dans un thread à part
         self.thread = ExtractionThread(chemin_asm, self.dossier_sortie, self.nom_sortie_edit.text())
         self.thread.log_signal.connect(self.log)
         self.thread.finished_signal.connect(self.extraction_terminee)
