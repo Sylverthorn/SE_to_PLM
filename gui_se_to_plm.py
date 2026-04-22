@@ -49,7 +49,7 @@ class ExtractionThread(QThread):
                 ref_util = os.path.splitext(nom_fichier)[0]
                 
                 lignes_excel.append([
-                    niveau, relation, compteur_ordre, qte, "", "", nom_fichier,
+                    niveau, relation, compteur_ordre, qte, "", nom_fichier,
                     classe, ref_util, ver, rev, desig, "", chemin_complet
                 ])
                 compteur_ordre += 1
@@ -140,7 +140,7 @@ class ExtractionThread(QThread):
             ws = wb.active
             ws.title = "Import PLM"
             
-            headers = ["Level", "Relationship", "ordre", "quantite", "repere", "localisation", "Fichier_Ref", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments"]
+            headers = ["Level", "Relationship", "ordre", "quantite", "repere", "Fichier_Ref", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments"]
             ws.append(headers)
             
             header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
@@ -148,7 +148,7 @@ class ExtractionThread(QThread):
             
             for cell in ws[1]:
                 cell.font = Font(bold=True)
-                cell.fill = header_fill if cell.column < 14 else orange_fill
+                cell.fill = header_fill if cell.column < 13 else orange_fill
                 cell.alignment = Alignment(horizontal="left")
             
             for l in lignes_excel: ws.append(l)
