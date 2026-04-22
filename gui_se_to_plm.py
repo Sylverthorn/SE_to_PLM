@@ -44,13 +44,13 @@ class ExtractionThread(QThread):
             liste_plans_a_rajouter = []
             stats = {"3d": 0, "2d": 0}
             
-            def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="", desig=""):
+            def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-"):
                 nonlocal compteur_ordre
                 ref_util = os.path.splitext(nom_fichier)[0]
                 
                 lignes_excel.append([
                     niveau, relation, compteur_ordre, qte, "", "", nom_fichier,
-                    classe, ref_util, "", rev, desig, "", chemin_complet
+                    classe, ref_util, ver, rev, desig, "", chemin_complet
                 ])
                 compteur_ordre += 1
             
@@ -79,13 +79,13 @@ class ExtractionThread(QThread):
                 for nom, data in dict_occ.items():
                     stats["3d"] += 1
                     classe_3d = determiner_classe(nom)
-                    meta = {"designation": "", "revision": ""}
+                    meta = {"designation": "", "revision": "1", "version": "-"}
                     try:
                         meta = extraire_metadonnees(data["obj"].OccurrenceDocument)
                     except: pass
                     
                     # On ajoute uniquement le 3D dans l'arbre principal
-                    ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"])
+                    ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"])
                     
                     nom_sans_ext = os.path.splitext(nom)[0].lower()
                     if nom_sans_ext in index_plans:
@@ -96,7 +96,8 @@ class ExtractionThread(QThread):
                         liste_plans_a_rajouter.append({
                             "dft_nom": nom_dft, "dft_path": chemin_dft,
                             "src_nom": nom, "src_path": data["chemin"],
-                            "src_classe": classe_3d, "src_rev": meta["revision"], "src_desig": meta["designation"]
+                            "src_classe": classe_3d, "src_rev": meta["revision"], "src_desig": meta["designation"],
+                            "src_ver": meta["version"]
                         })
                         stats["2d"] += 1
                     
@@ -108,7 +109,7 @@ class ExtractionThread(QThread):
             
             meta_root = extraire_metadonnees(doc_racine)
             nom_root = os.path.basename(doc_racine.FullName)
-            ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"])
+            ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"])
             
             nom_root_pur = os.path.splitext(nom_root)[0].lower()
             if nom_root_pur in index_plans:
@@ -117,7 +118,8 @@ class ExtractionThread(QThread):
                 liste_plans_a_rajouter.append({
                     "dft_nom": nom_dft_root, "dft_path": path_dft_root,
                     "src_nom": nom_root, "src_path": doc_racine.FullName,
-                    "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["designation"]
+                    "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
+                    "src_ver": meta_root["version"]
                 })
                 stats["2d"] += 1
             
@@ -128,7 +130,7 @@ class ExtractionThread(QThread):
             for item in liste_plans_a_rajouter:
                 if item["dft_path"] not in plans_deja_traites:
                     ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A")
-                    ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"])
+                    ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
                     plans_deja_traites.add(item["dft_path"])
             
             self.log_signal.emit(f"Analyse terminée : {stats['3d']} fichiers 3D, {stats['2d']} plans", 'success')
