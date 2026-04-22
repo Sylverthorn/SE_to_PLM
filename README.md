@@ -145,8 +145,4 @@ SE_to_PLM/
 
 ## 📝 Licence
 
-Ce projet est fourni tel quel pour l'extraction de données Solid Edge vers des systèmes PLM.
 
-## 🤝 Contribution
-
-Les contributions sont les bienvenues pour améliorer l'outil et ajouter de nouvelles fonctionnalités.
