@@ -97,15 +97,32 @@ def lister_proprietes(doc_obj):
 
 def extraire_metadonnees(doc_obj, debug=False):
     """Récupère le titre, la version et force la révision à 1 depuis Solid Edge."""
-    meta = {"designation": "", "revision": "1", "version": "-"}
+    meta = {"Désignation": "", "revision": "1", "version": "-"}
     
     if debug:
         lister_proprietes(doc_obj)
     
+    # Essayer d'abord SummaryInformation
     try:
-        meta["designation"] = doc_obj.SummaryInformation.Title
+        meta["Désignation"] = doc_obj.SummaryInformation.Title
     except:
         pass
+    
+    # Si pas trouvé, chercher dans le PropertySet Custom
+    if not meta["Désignation"]:
+        try:
+            if hasattr(doc_obj, 'Properties'):
+                for prop_set in doc_obj.Properties:
+                    if hasattr(prop_set, 'Name') and prop_set.Name == "Custom":
+                        for prop in prop_set:
+                            nom_prop = prop.Name.lower() if hasattr(prop, 'Name') and prop.Name else ""
+                            if nom_prop == "désignation" or nom_prop == "designation":
+                                if hasattr(prop, 'Value') and prop.Value and str(prop.Value).strip() != "":
+                                    meta["Désignation"] = str(prop.Value).strip()
+                                    print(f"  -> Désignation trouvée dans Custom: {meta['Désignation']}")
+                                    break
+        except Exception as e:
+            print(f"  -> Erreur lecture Désignation Custom: {e}")
     
     try:
         # Récupération de l'attribut "indice de modification"
@@ -177,13 +194,27 @@ def lancer_extraction_plm():
         liste_plans_a_rajouter = [] 
         stats = {"3d": 0, "2d": 0}
 
+        def get_suffixe_fichier(nom_fichier):
+            """Retourne le suffixe approprié selon l'extension du fichier."""
+            ext = os.path.splitext(nom_fichier)[1].lower()
+            if ext == '.asm':
+                return "(ASM)"
+            elif ext in ['.par', '.psm']:
+                return "(PRT)"
+            elif ext == '.dft':
+                return "(DRW)"
+            return ""
+
         def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-"):
             nonlocal compteur_ordre
             ref_util = os.path.splitext(nom_fichier)[0]
+            special_cad = os.path.splitext(nom_fichier)[0]  # Sans extension
+            suffixe = get_suffixe_fichier(nom_fichier)
+            attachement = f"{chemin_complet} {suffixe}" if suffixe else chemin_complet
             
             lignes_excel.append([
-                niveau, relation, compteur_ordre, qte, "", nom_fichier, 
-                classe, ref_util, ver, rev, desig, "", chemin_complet
+                niveau, relation, compteur_ordre, qte, "", special_cad, 
+                classe, ref_util, ver, rev, desig, "", attachement
             ])
             compteur_ordre += 1
 
@@ -212,13 +243,13 @@ def lancer_extraction_plm():
             for nom, data in dict_occ.items():
                 stats["3d"] += 1
                 classe_3d = determiner_classe(nom)
-                meta = {"designation": "", "revision": "1", "version": "-"}
+                meta = {"Désignation": "", "revision": "1", "version": "-"}
                 try:
                     meta = extraire_metadonnees(data["obj"].OccurrenceDocument)
                 except: pass
 
                 # Ajout de la pièce/sous-assemblage 3D dans l'arbre principal
-                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"])
+                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["Désignation"], meta["version"])
                 
                 # Vérification si un plan existe (mais on NE l'ajoute PAS dans l'arbre principal)
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
@@ -234,7 +265,7 @@ def lancer_extraction_plm():
                         "src_path": data["chemin"],
                         "src_classe": classe_3d,
                         "src_rev": meta["revision"],
-                        "src_desig": meta["designation"],
+                        "src_desig": meta["Désignation"],
                         "src_ver": meta["version"]
                     })
                     stats["2d"] += 1
@@ -248,7 +279,7 @@ def lancer_extraction_plm():
         # Racine du projet
         meta_root = extraire_metadonnees(doc_racine)
         nom_root = os.path.basename(doc_racine.FullName)
-        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"])
+        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["Désignation"], meta_root["version"])
 
         # Plan de la racine
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
@@ -258,7 +289,7 @@ def lancer_extraction_plm():
             liste_plans_a_rajouter.append({
                 "dft_nom": nom_dft_root, "dft_path": path_dft_root,
                 "src_nom": nom_root, "src_path": doc_racine.FullName,
-                "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
+                "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["Désignation"],
                 "src_ver": meta_root["version"]
             })
             stats["2d"] += 1
@@ -274,7 +305,7 @@ def lancer_extraction_plm():
         for item in liste_plans_a_rajouter:
             if item["dft_path"] not in plans_deja_traites:
                 # Ouvrir le fichier DFT pour extraire ses métadonnées
-                meta_dft = {"designation": "", "revision": "1", "version": "-"}
+                meta_dft = {"Désignation": "", "revision": "1", "version": "-"}
                 try:
                     doc_dft = app.Documents.Open(item["dft_path"])
                     meta_dft = extraire_metadonnees(doc_dft)
@@ -283,7 +314,7 @@ def lancer_extraction_plm():
                     print(f"  Erreur lecture {item['dft_nom']}: {e}")
                 
                 # Le plan (DFT) est le Parent (Level 0)
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], meta_dft["designation"], meta_dft["version"])
+                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], meta_dft["Désignation"], meta_dft["version"])
                 # Le fichier 3D associé devient l'enfant (Level 1)
                 ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
                 plans_deja_traites.add(item["dft_path"])
@@ -292,9 +323,9 @@ def lancer_extraction_plm():
         print("Génération du fichier Excel...")
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = "Import PLM"
+        ws.title = "Structure"
         
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "Fichier_Ref", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments"]
+        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "Désignation", "dia_se", "Attachments"]
         ws.append(headers)
         
         header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
