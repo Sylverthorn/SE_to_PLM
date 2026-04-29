@@ -95,13 +95,13 @@ class ExtractionThread(QThread):
                 for nom, data in dict_occ.items():
                     stats["3d"] += 1
                     classe_3d = determiner_classe(nom)
-                    meta = {"Désignation": "", "revision": "1", "version": "-"}
+                    meta = {"designation": "", "revision": "1", "version": "-"}
                     try:
                         meta = extraire_metadonnees(data["obj"].OccurrenceDocument)
                     except: pass
                     
                     # On ajoute uniquement le 3D dans l'arbre principal
-                    ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["Désignation"], meta["version"])
+                    ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"])
                     
                     nom_sans_ext = os.path.splitext(nom)[0].lower()
                     if nom_sans_ext in index_plans:
@@ -112,7 +112,7 @@ class ExtractionThread(QThread):
                         liste_plans_a_rajouter.append({
                             "dft_nom": nom_dft, "dft_path": chemin_dft,
                             "src_nom": nom, "src_path": data["chemin"],
-                            "src_classe": classe_3d, "src_rev": meta["revision"], "src_desig": meta["Désignation"],
+                            "src_classe": classe_3d, "src_rev": meta["revision"], "src_desig": meta["designation"],
                             "src_ver": meta["version"]
                         })
                         stats["2d"] += 1
@@ -125,7 +125,7 @@ class ExtractionThread(QThread):
             
             meta_root = extraire_metadonnees(doc_racine)
             nom_root = os.path.basename(doc_racine.FullName)
-            ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["Désignation"], meta_root["version"])
+            ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"])
             
             nom_root_pur = os.path.splitext(nom_root)[0].lower()
             if nom_root_pur in index_plans:
@@ -134,7 +134,7 @@ class ExtractionThread(QThread):
                 liste_plans_a_rajouter.append({
                     "dft_nom": nom_dft_root, "dft_path": path_dft_root,
                     "src_nom": nom_root, "src_path": doc_racine.FullName,
-                    "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["Désignation"],
+                    "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
                     "src_ver": meta_root["version"]
                 })
                 stats["2d"] += 1
@@ -147,7 +147,7 @@ class ExtractionThread(QThread):
             for item in liste_plans_a_rajouter:
                 if item["dft_path"] not in plans_deja_traites:
                     # Ouvrir le fichier DFT pour extraire ses métadonnées
-                    meta_dft = {"Désignation": "", "revision": "1", "version": "-"}
+                    meta_dft = {"designation": "", "revision": "1", "version": "-"}
                     try:
                         doc_dft = app.Documents.Open(item["dft_path"])
                         # Debug: activer pour le premier fichier
@@ -159,7 +159,7 @@ class ExtractionThread(QThread):
                     except Exception as e:
                         self.log_signal.emit(f"  Erreur lecture {item['dft_nom']}: {e}", 'warning')
                     
-                    # Utiliser la Désignation de la pièce 3D associée pour le DFT
+                    # Utiliser la designation de la pièce 3D associée pour le DFT
                     ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"])
                     ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
                     plans_deja_traites.add(item["dft_path"])
@@ -171,7 +171,7 @@ class ExtractionThread(QThread):
             ws = wb.active
             ws.title = "Structure"
             
-            headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "Désignation", "dia_se", "Attachments"]
+            headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments"]
             ws.append(headers)
             
             header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")

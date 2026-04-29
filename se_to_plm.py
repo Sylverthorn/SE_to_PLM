@@ -135,19 +135,19 @@ def lister_proprietes(doc_obj):
 
 def extraire_metadonnees(doc_obj, debug=False):
     """Récupère le titre, la version et force la révision à 1 depuis Solid Edge."""
-    meta = {"Désignation": "", "revision": "1", "version": "-"}
+    meta = {"designation": "", "revision": "1", "version": "-"}
     
     if debug:
         lister_proprietes(doc_obj)
     
     # Essayer d'abord SummaryInformation
     try:
-        meta["Désignation"] = doc_obj.SummaryInformation.Title
+        meta["designation"] = doc_obj.SummaryInformation.Title
     except:
         pass
     
     # Si pas trouvé, chercher dans le PropertySet Custom
-    if not meta["Désignation"]:
+    if not meta["designation"]:
         try:
             if hasattr(doc_obj, 'Properties'):
                 for prop_set in doc_obj.Properties:
@@ -156,11 +156,11 @@ def extraire_metadonnees(doc_obj, debug=False):
                             nom_prop = prop.Name.lower() if hasattr(prop, 'Name') and prop.Name else ""
                             if nom_prop == "désignation" or nom_prop == "designation":
                                 if hasattr(prop, 'Value') and prop.Value and str(prop.Value).strip() != "":
-                                    meta["Désignation"] = str(prop.Value).strip()
-                                    print(f"  -> Désignation trouvée dans Custom: {meta['Désignation']}")
+                                    meta["designation"] = str(prop.Value).strip()
+                                    print(f"  -> designation trouvée dans Custom: {meta['designation']}")
                                     break
         except Exception as e:
-            print(f"  -> Erreur lecture Désignation Custom: {e}")
+            print(f"  -> Erreur lecture designation Custom: {e}")
     
     try:
         # Récupération de l'attribut "indice de modification"
@@ -281,13 +281,13 @@ def lancer_extraction_plm():
             for nom, data in dict_occ.items():
                 stats["3d"] += 1
                 classe_3d = determiner_classe(nom)
-                meta = {"Désignation": "", "revision": "1", "version": "-"}
+                meta = {"designation": "", "revision": "1", "version": "-"}
                 try:
                     meta = extraire_metadonnees(data["obj"].OccurrenceDocument)
                 except: pass
 
                 # Ajout de la pièce/sous-assemblage 3D dans l'arbre principal
-                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["Désignation"], meta["version"])
+                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"])
                 
                 # Vérification si un plan existe (mais on NE l'ajoute PAS dans l'arbre principal)
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
@@ -303,7 +303,7 @@ def lancer_extraction_plm():
                         "src_path": data["chemin"],
                         "src_classe": classe_3d,
                         "src_rev": meta["revision"],
-                        "src_desig": meta["Désignation"],
+                        "src_desig": meta["designation"],
                         "src_ver": meta["version"]
                     })
                     stats["2d"] += 1
@@ -317,7 +317,7 @@ def lancer_extraction_plm():
         # Racine du projet
         meta_root = extraire_metadonnees(doc_racine)
         nom_root = os.path.basename(doc_racine.FullName)
-        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["Désignation"], meta_root["version"])
+        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"])
 
         # Plan de la racine
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
@@ -327,7 +327,7 @@ def lancer_extraction_plm():
             liste_plans_a_rajouter.append({
                 "dft_nom": nom_dft_root, "dft_path": path_dft_root,
                 "src_nom": nom_root, "src_path": doc_racine.FullName,
-                "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["Désignation"],
+                "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
                 "src_ver": meta_root["version"]
             })
             stats["2d"] += 1
@@ -343,7 +343,7 @@ def lancer_extraction_plm():
         for item in liste_plans_a_rajouter:
             if item["dft_path"] not in plans_deja_traites:
                 # Ouvrir le fichier DFT pour extraire ses métadonnées
-                meta_dft = {"Désignation": "", "revision": "1", "version": "-"}
+                meta_dft = {"designation": "", "revision": "1", "version": "-"}
                 try:
                     doc_dft = app.Documents.Open(item["dft_path"])
                     meta_dft = extraire_metadonnees(doc_dft)
@@ -351,7 +351,7 @@ def lancer_extraction_plm():
                 except Exception as e:
                     print(f"  Erreur lecture {item['dft_nom']}: {e}")
                 
-                # Le plan (DFT) est le Parent (Level 0) - utilise la Désignation de la pièce 3D associée
+                # Le plan (DFT) est le Parent (Level 0) - utilise la designation de la pièce 3D associée
                 ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"])
                 # Le fichier 3D associé devient l'enfant (Level 1)
                 ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
@@ -363,7 +363,7 @@ def lancer_extraction_plm():
         ws = wb.active
         ws.title = "Structure"
         
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "Désignation", "dia_se", "Attachments"]
+        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments"]
         ws.append(headers)
         
         header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
