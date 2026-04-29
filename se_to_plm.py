@@ -351,8 +351,8 @@ def lancer_extraction_plm():
                 except Exception as e:
                     print(f"  Erreur lecture {item['dft_nom']}: {e}")
                 
-                # Le plan (DFT) est le Parent (Level 0)
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], meta_dft["Désignation"], meta_dft["version"])
+                # Le plan (DFT) est le Parent (Level 0) - utilise la Désignation de la pièce 3D associée
+                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"])
                 # Le fichier 3D associé devient l'enfant (Level 1)
                 ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
                 plans_deja_traites.add(item["dft_path"])
