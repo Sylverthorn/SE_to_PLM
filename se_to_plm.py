@@ -15,36 +15,74 @@ def demander_fichier_asm():
         filetypes=[("Assemblage Solid Edge", "*.asm")]
     )
 
-def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None):
+def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None, mode_recherche="les_deux", max_depth=3):
     """Parcourt le dossier et les sous-dossiers pour trouver tous les plans .dft.
-    Toujours remonte l'arborescence à partir du fichier ASM.
-    Si dossier_dft est fourni, recherche également dans ce dossier et ses sous-dossiers."""
+    Version optimisée avec limite de profondeur et os.scandir.
+    
+    Modes de recherche:
+    - "arborescence": cherche uniquement dans l'arborescence remontée depuis l'ASM
+    - "dossier_specifique": cherche uniquement dans le dossier spécifique
+    - "les_deux": cherche dans les deux (comportement par défaut)
+    """
     index = {}
-    if not chemin_asm_initial: return index
-    
-    # Toujours remonter l'arborescence depuis le fichier ASM (4 niveaux)
-    racine_projet = chemin_asm_initial
-    for _ in range(4):
-        racine_projet = os.path.dirname(racine_projet)
-        if not racine_projet:
-            break
+    if not chemin_asm_initial:
+        return index
 
-    print(f"--- Indexation globale des plans (.dft) ---")
-    print(f"Scan en cours : {racine_projet}")
-    
-    dossiers_a_scanner = [racine_projet]
-    if dossier_dft and os.path.exists(dossier_dft):
-        print(f"Dossier additionnel : {dossier_dft}")
-        dossiers_a_scanner.append(dossier_dft)
-    
-    for racine in dossiers_a_scanner:
-        for dossier, _, fichiers in os.walk(racine):
-            for fichier in fichiers:
-                if fichier.lower().endswith('.dft'):
-                    nom_base = os.path.splitext(fichier)[0].lower()
-                    index[nom_base] = os.path.join(dossier, fichier)
-                
-    print(f"-> {len(index)} plan(s) détecté(s).")
+    print(f"--- Indexation des plans (.dft) [Mode: {mode_recherche}] ---")
+
+    dossiers_a_scanner = []
+
+    # Mode arborescence ou les_deux: ajouter l'arborescence depuis l'ASM
+    if mode_recherche in ["arborescence", "les_deux"]:
+        # Remonter l'arborescence depuis le fichier ASM (4 niveaux)
+        racine_projet = chemin_asm_initial
+        for _ in range(2):
+            parent = os.path.dirname(racine_projet)
+            if not parent or parent == racine_projet:
+                break
+            racine_projet = parent
+        
+        print(f"Dossier racine : {racine_projet}")
+        dossiers_a_scanner.append((racine_projet, 0))
+
+    # Mode dossier_specifique ou les_deux: ajouter le dossier spécifique
+    if mode_recherche in ["dossier_specifique", "les_deux"]:
+        if dossier_dft and os.path.exists(dossier_dft):
+            print(f"Dossier spécifique : {dossier_dft}")
+            dossiers_a_scanner.append((dossier_dft, 0))
+        elif mode_recherche == "dossier_specifique":
+            print("AVERTISSEMENT: Aucun dossier spécifique n'a été sélectionné!")
+            return index
+
+    print(f"Profondeur max : {max_depth} niveaux")
+
+    dossiers_traites = 0
+
+    for dossier_racine, start_depth in dossiers_a_scanner:
+        pile = [(dossier_racine, start_depth)]
+
+        while pile:
+            chemin_dossier, depth = pile.pop()
+            dossiers_traites += 1
+
+            if depth > max_depth:
+                continue
+
+            try:
+                with os.scandir(chemin_dossier) as it:
+                    for entry in it:
+                        if entry.is_file() and entry.name.lower().endswith('.dft'):
+                            nom_base = os.path.splitext(entry.name)[0].lower()
+                            index[nom_base] = entry.path
+                        elif entry.is_dir() and depth < max_depth:
+                            pile.append((entry.path, depth + 1))
+            except (PermissionError, OSError):
+                continue
+
+            if dossiers_traites % 100 == 0:
+                print(f"  ... {dossiers_traites} dossiers scannés, {len(index)} plans trouvés")
+
+    print(f"-> {len(index)} plan(s) détecté(s) dans {dossiers_traites} dossiers")
     return index
 
 def lister_proprietes(doc_obj):

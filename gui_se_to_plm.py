@@ -2,8 +2,8 @@ import sys
 import os
 import time
 from datetime import datetime
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox, QComboBox)
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QTextCursor, QColor
 
@@ -15,22 +15,23 @@ from openpyxl.styles import Font, PatternFill, Alignment
 class ExtractionThread(QThread):
     log_signal = pyqtSignal(str, str)
     finished_signal = pyqtSignal()
-    
-    def __init__(self, chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None):
+
+    def __init__(self, chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche_dft="les_deux"):
         super().__init__()
         self.chemin_asm = chemin_asm
         self.dossier_sortie = dossier_sortie
         self.nom_sortie = nom_sortie
         self.dossier_dft = dossier_dft
-    
+        self.mode_recherche_dft = mode_recherche_dft
+
     def run(self):
         try:
             self.log_signal.emit("=" * 60, 'info')
             self.log_signal.emit("Début de l'extraction PLM", 'info')
             self.log_signal.emit("=" * 60, 'info')
-            
-            self.log_signal.emit("\n--- Indexation des plans (.dft) ---", 'info')
-            index_plans = indexer_les_plans_projet_entier(self.chemin_asm, self.dossier_dft)
+
+            self.log_signal.emit(f"\n--- Indexation des plans (.dft) [Mode: {self.mode_recherche_dft}] ---", 'info')
+            index_plans = indexer_les_plans_projet_entier(self.chemin_asm, self.dossier_dft, self.mode_recherche_dft)
             self.log_signal.emit(f"-> {len(index_plans)} plan(s) détecté(s).", 'info')
             
             self.log_signal.emit("\nOuverture de Solid Edge...", 'info')
@@ -239,15 +240,32 @@ class PLMExtractorGUI(QMainWindow):
         asm_layout.addWidget(btn_parcourir)
         main_layout.addLayout(asm_layout)
         
+        # Mode de recherche DFT
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode recherche DFT :"))
+        self.mode_dft_combo = QComboBox()
+        self.mode_dft_combo.addItems([
+            "Arborescence uniquement",
+            "Dossier spécifique uniquement",
+            "Les deux (arborescence + dossier)"
+        ])
+        self.mode_dft_combo.setCurrentIndex(2)  # "Les deux" par défaut
+        self.mode_dft_combo.currentIndexChanged.connect(self.on_mode_dft_changed)
+        mode_layout.addWidget(self.mode_dft_combo)
+        main_layout.addLayout(mode_layout)
+
+        # Dossier DFT spécifique
         dft_layout = QHBoxLayout()
         dft_layout.addWidget(QLabel("Dossier plans (.dft) :"))
         self.dossier_dft_edit = QLineEdit()
         self.dossier_dft_edit.setReadOnly(True)
-        self.dossier_dft_edit.setPlaceholderText("Optionnel")
+        self.dossier_dft_edit.setPlaceholderText("Sélectionner un dossier...")
+        self.dossier_dft_edit.setEnabled(False)  # Désactivé par défaut
         dft_layout.addWidget(self.dossier_dft_edit)
-        btn_parcourir_dft = QPushButton("Parcourir...")
-        btn_parcourir_dft.clicked.connect(self.choisir_dossier_dft)
-        dft_layout.addWidget(btn_parcourir_dft)
+        self.btn_parcourir_dft = QPushButton("Parcourir...")
+        self.btn_parcourir_dft.clicked.connect(self.choisir_dossier_dft)
+        self.btn_parcourir_dft.setEnabled(False)  # Désactivé par défaut
+        dft_layout.addWidget(self.btn_parcourir_dft)
         main_layout.addLayout(dft_layout)
         
         sortie_layout = QHBoxLayout()
@@ -285,6 +303,22 @@ class PLMExtractorGUI(QMainWindow):
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.nom_sortie_edit.setText(f"Export_PLM_{nom_asm}_{timestamp}.xlsx")
     
+    def on_mode_dft_changed(self, index):
+        """Active/désactive le champ dossier DFT selon le mode sélectionné."""
+        # Mode 0 = Arborescence uniquement (désactivé)
+        # Mode 1 = Dossier spécifique uniquement (activé)
+        # Mode 2 = Les deux (activé)
+        if index == 1:  # Dossier spécifique uniquement
+            self.dossier_dft_edit.setEnabled(True)
+            self.btn_parcourir_dft.setEnabled(True)
+        elif index == 2:  # Les deux
+            self.dossier_dft_edit.setEnabled(True)
+            self.btn_parcourir_dft.setEnabled(True)
+        else:  # Arborescence uniquement
+            self.dossier_dft_edit.setEnabled(False)
+            self.btn_parcourir_dft.setEnabled(False)
+            self.dossier_dft_edit.clear()
+
     def choisir_dossier_dft(self):
         dossier = QFileDialog.getExistingDirectory(
             self,
@@ -294,7 +328,7 @@ class PLMExtractorGUI(QMainWindow):
         if dossier:
             self.dossier_dft_edit.setText(dossier)
             self.log(f"Dossier plans sélectionné : {dossier}", 'info')
-    
+
     def log(self, message, msg_type='info'):
         cursor = self.console.textCursor()
         cursor.movePosition(QTextCursor.End)
@@ -327,7 +361,17 @@ class PLMExtractorGUI(QMainWindow):
         self.btn_extraire.setText("Extraction en cours...")
         
         dossier_dft = self.dossier_dft_edit.text() if self.dossier_dft_edit.text() else None
-        self.thread = ExtractionThread(chemin_asm, self.dossier_sortie, self.nom_sortie_edit.text(), dossier_dft)
+        
+        # Convertir l'index du combo en mode de recherche
+        mode_index = self.mode_dft_combo.currentIndex()
+        if mode_index == 0:
+            mode_recherche = "arborescence"
+        elif mode_index == 1:
+            mode_recherche = "dossier_specifique"
+        else:
+            mode_recherche = "les_deux"
+        
+        self.thread = ExtractionThread(chemin_asm, self.dossier_sortie, self.nom_sortie_edit.text(), dossier_dft, mode_recherche)
         self.thread.log_signal.connect(self.log)
         self.thread.finished_signal.connect(self.extraction_terminee)
         self.thread.start()
