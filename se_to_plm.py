@@ -2,9 +2,13 @@ import win32com.client
 import openpyxl
 import os
 import time
+import pythoncom
 import tkinter as tk
 from tkinter import filedialog
 from openpyxl.styles import Font, PatternFill, Alignment
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+import threading
 
 def demander_fichier_asm():
     """Ouvre l'explorateur pour choisir le fichier ASM."""
@@ -15,14 +19,37 @@ def demander_fichier_asm():
         filetypes=[("Assemblage Solid Edge", "*.asm")]
     )
 
-def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None, mode_recherche="les_deux", max_depth=3):
+def _scanner_dossier_thread_safe(args):
+    """Fonction worker pour scanner un dossier (thread-safe)."""
+    chemin_dossier, depth, max_depth = args
+    plans_trouves = []
+    sous_dossiers = []
+    dossiers_count = 1
+    
+    try:
+        with os.scandir(chemin_dossier) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.lower().endswith('.dft'):
+                    nom_base = os.path.splitext(entry.name)[0].lower()
+                    plans_trouves.append((nom_base, entry.path))
+                elif entry.is_dir() and depth < max_depth:
+                    sous_dossiers.append((entry.path, depth + 1))
+    except (PermissionError, OSError):
+        pass
+    
+    return plans_trouves, sous_dossiers, dossiers_count
+
+def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None, mode_recherche="les_deux", max_depth=3, callback_progress=None):
     """Parcourt le dossier et les sous-dossiers pour trouver tous les plans .dft.
-    Version optimisée avec limite de profondeur et os.scandir.
+    Version multithreadée avec ThreadPoolExecutor pour I/O parallèles.
     
     Modes de recherche:
     - "arborescence": cherche uniquement dans l'arborescence remontée depuis l'ASM
     - "dossier_specifique": cherche uniquement dans le dossier spécifique
     - "les_deux": cherche dans les deux (comportement par défaut)
+    
+    Args:
+        callback_progress: Fonction appelée avec (dossiers_scannes, plans_trouves, total_a_faire)
     """
     index = {}
     if not chemin_asm_initial:
@@ -34,7 +61,6 @@ def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None, mode_r
 
     # Mode arborescence ou les_deux: ajouter l'arborescence depuis l'ASM
     if mode_recherche in ["arborescence", "les_deux"]:
-        # Remonter l'arborescence depuis le fichier ASM (4 niveaux)
         racine_projet = chemin_asm_initial
         for _ in range(2):
             parent = os.path.dirname(racine_projet)
@@ -57,33 +83,84 @@ def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None, mode_r
     print(f"Profondeur max : {max_depth} niveaux")
 
     dossiers_traites = 0
-
-    for dossier_racine, start_depth in dossiers_a_scanner:
-        pile = [(dossier_racine, start_depth)]
-
+    pile = dossiers_a_scanner.copy()
+    
+    # Utiliser ThreadPoolExecutor pour paralléliser le scan
+    with ThreadPoolExecutor(max_workers=8) as executor:
         while pile:
-            chemin_dossier, depth = pile.pop()
-            dossiers_traites += 1
-
-            if depth > max_depth:
-                continue
-
-            try:
-                with os.scandir(chemin_dossier) as it:
-                    for entry in it:
-                        if entry.is_file() and entry.name.lower().endswith('.dft'):
-                            nom_base = os.path.splitext(entry.name)[0].lower()
-                            index[nom_base] = entry.path
-                        elif entry.is_dir() and depth < max_depth:
-                            pile.append((entry.path, depth + 1))
-            except (PermissionError, OSError):
-                continue
-
+            # Prendre un batch de dossiers à traiter
+            batch = []
+            while pile and len(batch) < 16:
+                batch.append(pile.pop(0) + (max_depth,))
+            
+            if not batch:
+                break
+            
+            # Soumettre les tâches en parallèle
+            futures = {executor.submit(_scanner_dossier_thread_safe, args): args for args in batch}
+            
+            # Collecter les résultats
+            for future in as_completed(futures):
+                try:
+                    plans_trouves, sous_dossiers, count = future.result()
+                    
+                    # Ajouter les plans trouvés
+                    for nom_base, chemin in plans_trouves:
+                        index[nom_base] = chemin
+                    
+                    # Ajouter les sous-dossiers à la pile
+                    pile.extend(sous_dossiers)
+                    dossiers_traites += count
+                    
+                    # Callback de progression
+                    if callback_progress and dossiers_traites % 50 == 0:
+                        callback_progress(dossiers_traites, len(index), len(pile) + dossiers_traites)
+                        
+                except Exception as e:
+                    print(f"  Erreur scan: {e}")
+            
             if dossiers_traites % 100 == 0:
                 print(f"  ... {dossiers_traites} dossiers scannés, {len(index)} plans trouvés")
 
     print(f"-> {len(index)} plan(s) détecté(s) dans {dossiers_traites} dossiers")
     return index
+
+class MetadataCache:
+    """Cache thread-safe pour les métadonnées des documents."""
+    def __init__(self, max_size=1000):
+        self._cache = {}
+        self._lock = threading.Lock()
+        self._max_size = max_size
+        self._access_order = []
+    
+    def get(self, key):
+        with self._lock:
+            if key in self._cache:
+                # Mettre à jour l'ordre d'accès (LRU)
+                self._access_order.remove(key)
+                self._access_order.append(key)
+                return self._cache[key]
+            return None
+    
+    def set(self, key, value):
+        with self._lock:
+            if key in self._cache:
+                self._access_order.remove(key)
+            elif len(self._cache) >= self._max_size:
+                # Éviction LRU
+                oldest = self._access_order.pop(0)
+                del self._cache[oldest]
+            
+            self._cache[key] = value
+            self._access_order.append(key)
+    
+    def clear(self):
+        with self._lock:
+            self._cache.clear()
+            self._access_order.clear()
+
+# Instance globale du cache
+g_metadata_cache = MetadataCache()
 
 def lister_proprietes(doc_obj):
     """Liste toutes les propriétés disponibles pour le débogage."""
@@ -133,74 +210,163 @@ def lister_proprietes(doc_obj):
     except Exception as e:
         print(f"  Erreur listing propriétés: {e}")
 
-def extraire_metadonnees(doc_obj, debug=False):
-    """Récupère le titre, la version et force la révision à 1 depuis Solid Edge."""
+def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
+    """Extrait les propriétés sans ouvrir le fichier dans Solid Edge (ultra rapide).
+    
+    Utilise SolidEdge.FileProperties qui lit les métadonnées directement depuis le fichier
+    sans lancer l'interface graphique de Solid Edge.
+    
+    Args:
+        chemin_fichier: Chemin complet du fichier (.asm, .par, .psm, .dft)
+        debug: Activer le mode debug
+        use_cache: Utiliser le cache pour éviter les doublons
+    """
+    meta = {"designation": "", "revision": "1", "version": "-"}
+    
+    # Vérifier le cache si activé
+    if use_cache:
+        cached = g_metadata_cache.get(chemin_fichier)
+        if cached:
+            if debug:
+                print(f"  -> Cache hit pour {os.path.basename(chemin_fichier)}")
+            return cached.copy()
+    
+    try:
+        # Appelle le lecteur de propriétés (ultra rapide, ne lance pas l'interface 3D)
+        prop_reader = win32com.client.Dispatch("SolidEdge.FileProperties")
+        prop_reader.Open(chemin_fichier)
+        
+        # 1. Lire la désignation (SummaryInformation = 1)
+        try:
+            summary_props = prop_reader.Item("SummaryInformation")
+            meta["designation"] = summary_props.Item("Title").Value
+        except:
+            pass
+            
+        # 2. Lire la révision/version (Custom = 4)
+        noms_possibles = ["indice de modification", "revision index", "index", "revision", "rev"]
+        try:
+            custom_props = prop_reader.Item("Custom")
+            for i in range(1, custom_props.Count + 1):
+                prop = custom_props.Item(i)
+                if prop.Name.lower() in noms_possibles:
+                    meta["version"] = str(prop.Value).strip()
+                    if debug:
+                        print(f"  -> Version trouvée (FileProperties): {meta['version']}")
+                    break
+        except:
+            pass
+            
+        prop_reader.Close()
+        
+    except Exception as e:
+        if debug:
+            print(f"  -> Erreur lecture rapide pour {os.path.basename(chemin_fichier)}: {e}")
+    
+    # Mettre en cache si activé
+    if use_cache:
+        g_metadata_cache.set(chemin_fichier, meta.copy())
+    
+    return meta
+
+def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
+    """Récupère le titre, la version et force la révision à 1 depuis Solid Edge.
+    
+    Args:
+        doc_obj: Objet document Solid Edge
+        debug: Activer le mode debug
+        use_cache: Utiliser le cache pour éviter les doublons
+    """
+    # Récupérer l'identifiant unique du document
+    doc_id = None
+    try:
+        doc_id = doc_obj.FullName
+    except:
+        pass
+    
+    # Vérifier le cache si activé et document identifié
+    if use_cache and doc_id:
+        cached = g_metadata_cache.get(doc_id)
+        if cached:
+            if debug:
+                print(f"  -> Cache hit pour {os.path.basename(doc_id)}")
+            return cached.copy()
+    
     meta = {"designation": "", "revision": "1", "version": "-"}
     
     if debug:
         lister_proprietes(doc_obj)
     
-    # Essayer d'abord SummaryInformation
+    # Optimisation: collecter toutes les propriétés en une seule passe
+    custom_props = {}
+    all_props = {}
+    
+    # Collecter Properties -> Custom en une passe
+    if hasattr(doc_obj, 'Properties'):
+        try:
+            for prop_set in doc_obj.Properties:
+                if hasattr(prop_set, 'Name') and prop_set.Name == "Custom":
+                    for prop in prop_set:
+                        if hasattr(prop, 'Name') and prop.Name:
+                            nom_lower = prop.Name.lower()
+                            if hasattr(prop, 'Value') and prop.Value:
+                                custom_props[nom_lower] = str(prop.Value).strip()
+                    break  # On a trouvé Custom, pas besoin de continuer
+        except:
+            pass
+    
+    # Collecter PropertySets en une passe (pour la version uniquement si pas trouvée)
+    if hasattr(doc_obj, 'PropertySets'):
+        try:
+            for prop_set in doc_obj.PropertySets:
+                for prop in prop_set:
+                    if hasattr(prop, 'Name') and prop.Name and hasattr(prop, 'Value') and prop.Value:
+                        nom_lower = prop.Name.lower()
+                        all_props[nom_lower] = str(prop.Value).strip()
+        except:
+            pass
+    
+    # Essayer SummaryInformation pour la désignation (plus rapide)
     try:
         meta["designation"] = doc_obj.SummaryInformation.Title
     except:
         pass
     
-    # Si pas trouvé, chercher dans le PropertySet Custom
+    # Si pas trouvé dans SummaryInformation, chercher dans Custom
     if not meta["designation"]:
-        try:
-            if hasattr(doc_obj, 'Properties'):
-                for prop_set in doc_obj.Properties:
-                    if hasattr(prop_set, 'Name') and prop_set.Name == "Custom":
-                        for prop in prop_set:
-                            nom_prop = prop.Name.lower() if hasattr(prop, 'Name') and prop.Name else ""
-                            if nom_prop == "désignation" or nom_prop == "designation":
-                                if hasattr(prop, 'Value') and prop.Value and str(prop.Value).strip() != "":
-                                    meta["designation"] = str(prop.Value).strip()
-                                    print(f"  -> designation trouvée dans Custom: {meta['designation']}")
-                                    break
-        except Exception as e:
-            print(f"  -> Erreur lecture designation Custom: {e}")
+        for key in ["désignation", "designation", "title", "titre"]:
+            if key in custom_props:
+                meta["designation"] = custom_props[key]
+                if debug:
+                    print(f"  -> designation trouvée dans Custom: {meta['designation']}")
+                break
     
-    try:
-        # Récupération de l'attribut "indice de modification"
-        # Essayer plusieurs noms possibles (français et anglais)
-        noms_possibles = [
-            "indice de modification",
-            "Indice de modification",
-            "revision index",
-            "Revision Index",
-            "modification index",
-            "Modification Index",
-            "index",
-            "Index"
-        ]
-        
-        # Méthode 1: Properties -> Custom PropertySet
-        if hasattr(doc_obj, 'Properties'):
-            for prop_set in doc_obj.Properties:
-                if hasattr(prop_set, 'Name') and prop_set.Name == "Custom":
-                    for prop in prop_set:
-                        nom_prop = prop.Name.lower() if hasattr(prop, 'Name') and prop.Name else ""
-                        if nom_prop in [n.lower() for n in noms_possibles]:
-                            if hasattr(prop, 'Value') and prop.Value and str(prop.Value).strip() != "":
-                                meta["version"] = str(prop.Value).strip()
-                                print(f"  -> Version trouvée: {meta['version']} (propriété: {prop.Name})")
-                                return meta
-        
-        # Méthode 2: PropertySets standard
-        if hasattr(doc_obj, 'PropertySets'):
-            for prop_set in doc_obj.PropertySets:
-                for prop in prop_set:
-                    nom_prop = prop.Name.lower() if prop.Name else ""
-                    if nom_prop in [n.lower() for n in noms_possibles]:
-                        if prop.Value and str(prop.Value).strip() != "":
-                            meta["version"] = str(prop.Value).strip()
-                            print(f"  -> Version trouvée: {meta['version']} (propriété: {prop.Name})")
-                            return meta
-            
-    except Exception as e:
-        print(f"  -> Erreur lecture version: {e}")
+    # Récupération de l'attribut "indice de modification"
+    noms_possibles = [
+        "indice de modification", "revision index", 
+        "modification index", "index", "revision", "rev"
+    ]
+    
+    # Chercher d'abord dans Custom (plus rapide)
+    for key in custom_props:
+        if any(nom in key for nom in noms_possibles):
+            meta["version"] = custom_props[key]
+            if debug:
+                print(f"  -> Version trouvée dans Custom: {meta['version']}")
+            break
+    
+    # Si pas trouvé, chercher dans PropertySets
+    if meta["version"] == "-":
+        for key in all_props:
+            if any(nom in key for nom in noms_possibles):
+                meta["version"] = all_props[key]
+                if debug:
+                    print(f"  -> Version trouvée dans PropertySets: {meta['version']}")
+                break
+    
+    # Mettre en cache si activé
+    if use_cache and doc_id:
+        g_metadata_cache.set(doc_id, meta.copy())
     
     return meta
 
@@ -220,11 +386,23 @@ def lancer_extraction_plm():
 
         index_plans = indexer_les_plans_projet_entier(chemin_asm)
 
-        print("\nOuverture de Solid Edge...")
-        app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
-        app.Visible = False 
+        print("\nConnexion à Solid Edge...")
+        try:
+            # 1. Tente de se brancher sur un Solid Edge déjà ouvert (Instantané)
+            app = win32com.client.GetActiveObject("SolidEdge.Application")
+            print("Connecté à l'instance existante de Solid Edge.")
+        except pythoncom.com_error:
+            # 2. S'il n'est pas ouvert, on le lance (Prend quelques secondes)
+            print("Démarrage de Solid Edge en arrière-plan...")
+            app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
+            app.Visible = False
+            print("Solid Edge démarré.")
+        
+        # Désactiver les alertes pour accélérer l'ouverture des fichiers
+        app.DisplayAlerts = False
+        
         doc_racine = app.Documents.Open(chemin_asm)
-        time.sleep(3) 
+        # COM API bloque jusqu'à ce que le document soit chargé, pas besoin de sleep 
 
         lignes_excel = []
         compteur_ordre = 1
@@ -283,10 +461,8 @@ def lancer_extraction_plm():
             for nom, data in dict_occ.items():
                 stats["3d"] += 1
                 classe_3d = determiner_classe(nom)
-                meta = {"designation": "", "revision": "1", "version": "-"}
-                try:
-                    meta = extraire_metadonnees(data["obj"].OccurrenceDocument)
-                except: pass
+                # Utiliser la méthode rapide avec le chemin du fichier
+                meta = extraire_metadonnees_rapide(data["chemin"])
 
                 # Ajout de la pièce/sous-assemblage 3D dans l'arbre principal
                 ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"])
@@ -316,8 +492,8 @@ def lancer_extraction_plm():
 
         print("\nAnalyse de la structure...")
         
-        # Racine du projet
-        meta_root = extraire_metadonnees(doc_racine)
+        # Racine du projet - utiliser la méthode rapide
+        meta_root = extraire_metadonnees_rapide(doc_racine.FullName)
         nom_root = os.path.basename(doc_racine.FullName)
         ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"])
 
@@ -344,14 +520,8 @@ def lancer_extraction_plm():
 
         for item in liste_plans_a_rajouter:
             if item["dft_path"] not in plans_deja_traites:
-                # Ouvrir le fichier DFT pour extraire ses métadonnées
-                meta_dft = {"designation": "", "revision": "1", "version": "-"}
-                try:
-                    doc_dft = app.Documents.Open(item["dft_path"])
-                    meta_dft = extraire_metadonnees(doc_dft)
-                    doc_dft.Close()
-                except Exception as e:
-                    print(f"  Erreur lecture {item['dft_nom']}: {e}")
+                # Utiliser la méthode ultra-rapide (FileProperties) au lieu d'ouvrir le document
+                meta_dft = extraire_metadonnees_rapide(item["dft_path"])
                 
                 # Le plan (DFT) est le Parent (Level 0) - utilise la designation de la pièce 3D associée
                 ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"])
