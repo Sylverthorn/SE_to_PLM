@@ -3,8 +3,8 @@ import os
 import time
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox, QComboBox)
-from PyQt5.QtCore import QThread, pyqtSignal
+                             QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox, QComboBox, QDialog, QProgressBar)
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QTextCursor, QColor
 
 from se_to_plm import indexer_les_plans_projet_entier, extraire_metadonnees, determiner_classe
@@ -209,6 +209,12 @@ class ExtractionThread(QThread):
             self.log_signal.emit("=" * 60, 'error')
         
         finally:
+            # Fermer Solid Edge
+            try:
+                if 'app' in locals():
+                    app.Quit()
+            except:
+                pass
             self.finished_signal.emit()
 
 class PLMExtractorGUI(QMainWindow):
@@ -220,6 +226,30 @@ class PLMExtractorGUI(QMainWindow):
         
         self.appliquer_style()
         self.creer_interface()
+    
+    def closeEvent(self, event):
+        """Fermer Solid Edge quand l'application est fermée avec une fenêtre de chargement."""
+        # Créer une fenêtre de chargement
+        loading_dialog = QDialog(self)
+        loading_dialog.setWindowTitle("Fermeture")
+        loading_dialog.setFixedSize(300, 100)
+        layout = QVBoxLayout(loading_dialog)
+        label = QLabel("Fermeture de Solid Edge...")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        loading_dialog.show()
+        
+        # Forcer la mise à jour de l'interface
+        QApplication.processEvents()
+        
+        try:
+            app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
+            app.Quit()
+        except:
+            pass
+        
+        loading_dialog.close()
+        event.accept()
     
     def appliquer_style(self):
         chemin_style = os.path.join(os.path.dirname(__file__), 'style.qss')
