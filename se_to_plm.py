@@ -248,10 +248,12 @@ def lancer_extraction_plm():
             ref_util = os.path.splitext(nom_fichier)[0]
             special_cad = os.path.splitext(nom_fichier)[0]  # Sans extension
             suffixe = get_suffixe_fichier(nom_fichier)
-            attachement = f"{chemin_complet} {suffixe}" if suffixe else chemin_complet
-            
+            # Normaliser le chemin (remplace / par \) et concaténer sans espace
+            chemin_normalise = os.path.normpath(chemin_complet)
+            attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
+
             lignes_excel.append([
-                niveau, relation, compteur_ordre, qte, "", special_cad, 
+                niveau, relation, compteur_ordre, qte, "", special_cad,
                 classe, ref_util, ver, rev, desig, "", attachement
             ])
             compteur_ordre += 1
