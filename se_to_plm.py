@@ -221,7 +221,15 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
         debug: Activer le mode debug
         use_cache: Utiliser le cache pour éviter les doublons
     """
-    meta = {"designation": "", "revision": "1", "version": "-"}
+    meta = {
+        "designation": "", 
+        "revision": "1", 
+        "version": "-",
+        "auteur": "",
+        "date_creation": "",
+        "auteur_modif": "",
+        "date_modif": ""
+    }
     
     # Vérifier le cache si activé
     if use_cache:
@@ -243,17 +251,35 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
         except:
             pass
             
-        # 2. Lire la révision/version (Custom = 4)
+        # 2. Lire la révision/version et les métadonnées (Custom = 4)
         noms_possibles = ["indice de modification", "revision index", "index", "revision", "rev"]
         try:
             custom_props = prop_reader.Item("Custom")
             for i in range(1, custom_props.Count + 1):
                 prop = custom_props.Item(i)
-                if prop.Name.lower() in noms_possibles:
+                prop_name_lower = prop.Name.lower()
+                
+                # Version
+                if prop_name_lower in noms_possibles:
                     meta["version"] = str(prop.Value).strip()
                     if debug:
                         print(f"  -> Version trouvée (FileProperties): {meta['version']}")
-                    break
+                
+                # Auteur
+                if prop_name_lower == "auteur":
+                    meta["auteur"] = str(prop.Value).strip()
+                
+                # Date de création
+                if prop_name_lower == "date de création":
+                    meta["date_creation"] = str(prop.Value).strip()
+                
+                # Auteur modification
+                if prop_name_lower == "auteur modif":
+                    meta["auteur_modif"] = str(prop.Value).strip()
+                
+                # Date modification
+                if prop_name_lower == "date modif":
+                    meta["date_modif"] = str(prop.Value).strip()
         except:
             pass
             
@@ -457,14 +483,14 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             elif ext == '.dft': return "(DRW)"
             return ""
         
-        def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-"):
+        def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-", auteur="", date_crea="", auteur_modif="", date_modif=""):
             nonlocal compteur_ordre
             ref_util = os.path.splitext(nom_fichier)[0]
             special_cad = os.path.splitext(nom_fichier)[0]
             suffixe = get_suffixe_fichier(nom_fichier)
             chemin_normalise = os.path.normpath(chemin_complet)
             attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
-            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, rev, desig, "", attachement])
+            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, rev, desig, "", attachement, auteur, date_crea, auteur_modif, date_modif])
             compteur_ordre += 1
         
         def explorer_occurrences(occurrences, niveau):
@@ -493,7 +519,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
                 stats["3d"] += 1
                 classe_3d = determiner_classe(nom)
                 meta = extraire_metadonnees_rapide(data["chemin"])
-                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"])
+                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"], meta["auteur"], meta["date_creation"], meta["auteur_modif"], meta["date_modif"])
                 
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
                 if nom_sans_ext in index_plans:
@@ -514,7 +540,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
         log("\nAnalyse de la structure...", 'info')
         meta_root = extraire_metadonnees_rapide(doc_racine.FullName)
         nom_root = os.path.basename(doc_racine.FullName)
-        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"])
+        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur_modif"], meta_root["date_modif"])
         
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
         if nom_root_pur in index_plans:
@@ -552,8 +578,8 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             
             if item["dft_path"] not in plans_deja_traites:
                 meta_dft = extraire_metadonnees_rapide(item["dft_path"])
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"])
-                ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
+                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"], meta_dft["auteur"], meta_dft["date_creation"], meta_dft["auteur_modif"], meta_dft["date_modif"])
+                ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"], "", "", "", "")
                 plans_deja_traites.add(item["dft_path"])
         
         log(f"Analyse terminée : {stats['3d']} fichiers 3D, {stats['2d']} plans", 'success')
@@ -566,7 +592,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
         ws = wb.active
         ws.title = "Structure"
         
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments"]
+        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1"]
         ws.append(headers)
         
         header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
