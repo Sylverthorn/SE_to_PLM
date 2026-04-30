@@ -379,63 +379,94 @@ def determiner_classe(nom_fichier, est_projet=False):
     if ext == '.dft': return "CAD_DRAWING_A"
     return "Folder"
 
-def lancer_extraction_plm():
+def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche="les_deux", 
+                         callback_log=None, callback_progress=None, check_cancelled=None):
+    """
+    Fonction moteur principale pour générer l'export PLM.
+    
+    Args:
+        chemin_asm: Chemin du fichier assemblage principal
+        dossier_sortie: Dossier de sortie pour le fichier Excel
+        nom_sortie: Nom du fichier de sortie
+        dossier_dft: Dossier spécifique pour les plans (optionnel)
+        mode_recherche: Mode de recherche des plans ("arborescence", "dossier_specifique", "les_deux")
+        callback_log: Fonction callback(message, type) pour les logs (type: 'info', 'success', 'error', 'warning')
+        callback_progress: Fonction callback(valeur, maximum, message) pour la progression
+        check_cancelled: Fonction callback() qui retourne True si l'opération doit être annulée
+    
+    Returns:
+        dict: {'chemin_fichier': chemin du fichier généré, 'stats': {'3d': int, '2d': int}}
+    """
+    # Fonctions utilitaires pour les logs
+    def log(message, msg_type='info'):
+        if callback_log:
+            callback_log(message, msg_type)
+        else:
+            print(message)
+    
+    def progress(value, maximum, message):
+        if callback_progress:
+            callback_progress(value, maximum, message)
+    
+    def is_cancelled():
+        if check_cancelled:
+            return check_cancelled()
+        return False
+    
     try:
-        chemin_asm = demander_fichier_asm()
-        if not chemin_asm: return
+        log("=" * 60, 'info')
+        log("Début de l'extraction PLM", 'info')
+        log("=" * 60, 'info')
+        progress(0, 100, "Initialisation...")
 
-        index_plans = indexer_les_plans_projet_entier(chemin_asm)
+        # Callback pour la progression de l'indexation
+        def on_index_progress(scanned, found, total):
+            if total > 0:
+                pct = min(10, int((scanned / total) * 10))
+                progress(pct, 100, f"Indexation: {scanned} dossiers scannés, {found} plans trouvés")
 
-        print("\nConnexion à Solid Edge...")
+        log(f"\n--- Indexation des plans (.dft) [Mode: {mode_recherche}] ---", 'info')
+        progress(0, 100, "Indexation des plans...")
+        index_plans = indexer_les_plans_projet_entier(chemin_asm, dossier_dft, mode_recherche, callback_progress=on_index_progress)
+        log(f"-> {len(index_plans)} plan(s) détecté(s).", 'info')
+        progress(10, 100, f"{len(index_plans)} plans indexés")
+        
+        log("\nConnexion à Solid Edge...", 'info')
         try:
-            # 1. Tente de se brancher sur un Solid Edge déjà ouvert (Instantané)
             app = win32com.client.GetActiveObject("SolidEdge.Application")
-            print("Connecté à l'instance existante de Solid Edge.")
+            log("Connecté à l'instance existante de Solid Edge.", 'success')
         except pythoncom.com_error:
-            # 2. S'il n'est pas ouvert, on le lance (Prend quelques secondes)
-            print("Démarrage de Solid Edge en arrière-plan...")
+            log("Démarrage de Solid Edge en arrière-plan...", 'info')
             app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
             app.Visible = False
-            print("Solid Edge démarré.")
+            log("Solid Edge démarré.", 'success')
         
-        # Désactiver les alertes pour accélérer l'ouverture des fichiers
         app.DisplayAlerts = False
-        
         doc_racine = app.Documents.Open(chemin_asm)
-        # COM API bloque jusqu'à ce que le document soit chargé, pas besoin de sleep 
-
+        log("Document chargé.", 'success')
+        
         lignes_excel = []
         compteur_ordre = 1
-        # Liste pour stocker les couples (DFT, 3D) pour les ajouter à la fin
-        liste_plans_a_rajouter = [] 
+        liste_plans_a_rajouter = []
         stats = {"3d": 0, "2d": 0}
-
+        
         def get_suffixe_fichier(nom_fichier):
-            """Retourne le suffixe approprié selon l'extension du fichier."""
             ext = os.path.splitext(nom_fichier)[1].lower()
-            if ext == '.asm':
-                return "(ASM)"
-            elif ext in ['.par', '.psm']:
-                return "(PRT)"
-            elif ext == '.dft':
-                return "(DRW)"
+            if ext == '.asm': return "(ASM)"
+            elif ext in ['.par', '.psm']: return "(PRT)"
+            elif ext == '.dft': return "(DRW)"
             return ""
-
+        
         def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-"):
             nonlocal compteur_ordre
             ref_util = os.path.splitext(nom_fichier)[0]
-            special_cad = os.path.splitext(nom_fichier)[0]  # Sans extension
+            special_cad = os.path.splitext(nom_fichier)[0]
             suffixe = get_suffixe_fichier(nom_fichier)
-            # Normaliser le chemin (remplace / par \) et concaténer sans espace
             chemin_normalise = os.path.normpath(chemin_complet)
             attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
-
-            lignes_excel.append([
-                niveau, relation, compteur_ordre, qte, "", special_cad,
-                classe, ref_util, ver, rev, desig, "", attachement
-            ])
+            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, rev, desig, "", attachement])
             compteur_ordre += 1
-
+        
         def explorer_occurrences(occurrences, niveau):
             nonlocal stats
             if occurrences is None: return
@@ -451,37 +482,27 @@ def lancer_extraction_plm():
                         nom_reel = os.path.basename(path_reel)
                     except:
                         nom_reel = occ.Name.split(':')[0]
-
+                    
                     if nom_reel not in dict_occ:
                         dict_occ[nom_reel] = {"qte": 1, "obj": occ, "chemin": path_reel}
                     else:
                         dict_occ[nom_reel]["qte"] += 1
                 except: continue
-
+            
             for nom, data in dict_occ.items():
                 stats["3d"] += 1
                 classe_3d = determiner_classe(nom)
-                # Utiliser la méthode rapide avec le chemin du fichier
                 meta = extraire_metadonnees_rapide(data["chemin"])
-
-                # Ajout de la pièce/sous-assemblage 3D dans l'arbre principal
                 ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"])
                 
-                # Vérification si un plan existe (mais on NE l'ajoute PAS dans l'arbre principal)
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
                 if nom_sans_ext in index_plans:
                     chemin_dft = index_plans[nom_sans_ext]
                     nom_dft = os.path.basename(chemin_dft)
-                    
-                    # On stocke l'information pour générer la structure inversée à la fin
                     liste_plans_a_rajouter.append({
-                        "dft_nom": nom_dft, 
-                        "dft_path": chemin_dft,
-                        "src_nom": nom,
-                        "src_path": data["chemin"],
-                        "src_classe": classe_3d,
-                        "src_rev": meta["revision"],
-                        "src_desig": meta["designation"],
+                        "dft_nom": nom_dft, "dft_path": chemin_dft,
+                        "src_nom": nom, "src_path": data["chemin"],
+                        "src_classe": classe_3d, "src_rev": meta["revision"], "src_desig": meta["designation"],
                         "src_ver": meta["version"]
                     })
                     stats["2d"] += 1
@@ -489,15 +510,12 @@ def lancer_extraction_plm():
                 if data["obj"].Subassembly:
                     try: explorer_occurrences(data["obj"].OccurrenceDocument.Occurrences, niveau + 1)
                     except: pass
-
-        print("\nAnalyse de la structure...")
         
-        # Racine du projet - utiliser la méthode rapide
+        log("\nAnalyse de la structure...", 'info')
         meta_root = extraire_metadonnees_rapide(doc_racine.FullName)
         nom_root = os.path.basename(doc_racine.FullName)
         ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"])
-
-        # Plan de la racine
+        
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
         if nom_root_pur in index_plans:
             path_dft_root = index_plans[nom_root_pur]
@@ -509,28 +527,41 @@ def lancer_extraction_plm():
                 "src_ver": meta_root["version"]
             })
             stats["2d"] += 1
-
-        # Exploration récursive de l'arbre 3D
+        
         explorer_occurrences(doc_racine.Occurrences, 1)
-
-        # --- A LA FIN : AJOUT DES PLANS EN LEVEL 0 ET LEURS 3D EN LEVEL 1 ---
-        print("Ajout des plans (DFT) à la fin du fichier...")
-        print("Extraction métadonnées des plans...")
-        plans_deja_traites = set()
-
+        
+        log("\nExtraction métadonnées des plans...", 'info')
+        progress(50, 100, "Extraction des métadonnées des plans...")
+        
+        plans_uniques = {}
         for item in liste_plans_a_rajouter:
+            if item["dft_path"] not in plans_uniques:
+                plans_uniques[item["dft_path"]] = item
+        
+        plans_list = list(plans_uniques.values())
+        total_plans = len(plans_list)
+        plans_deja_traites = set()
+        
+        for idx, item in enumerate(plans_list):
+            if is_cancelled():
+                break
+            
+            if idx % 5 == 0 and total_plans > 0:
+                progress_pct = 50 + int((idx / total_plans) * 20)
+                progress(progress_pct, 100, f"Plan {idx+1}/{total_plans}: {item['dft_nom'][:30]}...")
+            
             if item["dft_path"] not in plans_deja_traites:
-                # Utiliser la méthode ultra-rapide (FileProperties) au lieu d'ouvrir le document
                 meta_dft = extraire_metadonnees_rapide(item["dft_path"])
-                
-                # Le plan (DFT) est le Parent (Level 0) - utilise la designation de la pièce 3D associée
                 ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"])
-                # Le fichier 3D associé devient l'enfant (Level 1)
                 ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"])
                 plans_deja_traites.add(item["dft_path"])
-
-        # Génération Excel
-        print("Génération du fichier Excel...")
+        
+        log(f"Analyse terminée : {stats['3d']} fichiers 3D, {stats['2d']} plans", 'success')
+        progress(70, 100, f"Analyse terminée: {stats['3d']} fichiers 3D, {stats['2d']} plans")
+        
+        log("\nGénération du fichier Excel...", 'info')
+        progress(75, 100, "Génération du fichier Excel...")
+        
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Structure"
@@ -545,20 +576,65 @@ def lancer_extraction_plm():
             cell.font = Font(bold=True)
             cell.fill = header_fill if cell.column < 13 else orange_fill
             cell.alignment = Alignment(horizontal="left")
-
+        
+        progress(80, 100, "Écriture des données...")
         for l in lignes_excel: ws.append(l)
-
-        for col in ws.columns:
+        
+        progress(90, 100, "Calcul des largeurs de colonnes...")
+        columns = list(ws.columns)
+        
+        def calc_column_width(col_data):
+            col_cells, idx = col_data
             max_length = 0
-            for cell in col:
+            for cell in col_cells:
                 try: max_length = max(max_length, len(str(cell.value)))
                 except: pass
-            ws.column_dimensions[col[0].column_letter].width = max_length + 2
+            return (idx, max_length + 2)
         
-        nom_out = f"Export_PLM_{int(time.time())}.xlsx"
-        wb.save(nom_out)
-        print(f"\nFichier généré : {nom_out}")
-        print(f"3D: {stats['3d']} | Plans: {stats['2d']}")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(calc_column_width, (col, i)) for i, col in enumerate(columns)]
+            for future in futures:
+                idx, width = future.result()
+                ws.column_dimensions[columns[idx][0].column_letter].width = width
+        
+        if not nom_sortie.endswith('.xlsx'):
+            nom_sortie += '.xlsx'
+        
+        chemin_complet = os.path.join(dossier_sortie, nom_sortie)
+        progress(95, 100, "Sauvegarde du fichier...")
+        wb.save(chemin_complet)
+        
+        progress(100, 100, "Terminé!")
+        log(f"\nFichier généré : {chemin_complet}", 'success')
+        log("=" * 60, 'info')
+        log("Extraction terminée avec succès !", 'success')
+        
+        return {'chemin_fichier': chemin_complet, 'stats': stats}
+        
+    except Exception as e:
+        log(f"\nErreur : {e}", 'error')
+        log("=" * 60, 'error')
+        raise
+
+def lancer_extraction_plm():
+    try:
+        chemin_asm = demander_fichier_asm()
+        if not chemin_asm: return
+
+        dossier_sortie = os.path.dirname(chemin_asm)
+        nom_sortie = f"Export_PLM_{int(time.time())}.xlsx"
+        
+        # Utiliser le moteur centralisé
+        resultat = generer_export_excel(
+            chemin_asm=chemin_asm,
+            dossier_sortie=dossier_sortie,
+            nom_sortie=nom_sortie,
+            dossier_dft=None,
+            mode_recherche="les_deux"
+        )
+        
+        print(f"\nFichier généré : {resultat['chemin_fichier']}")
+        print(f"3D: {resultat['stats']['3d']} | Plans: {resultat['stats']['2d']}")
 
     except Exception as e:
         print(f"\nErreur : {e}")
