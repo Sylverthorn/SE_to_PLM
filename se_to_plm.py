@@ -210,6 +210,19 @@ def lister_proprietes(doc_obj):
     except Exception as e:
         print(f"  Erreur listing propriétés: {e}")
 
+def normaliser_date(valeur):
+    """Convertit une date SE (25/04/25 ou 25/04/2025) en '25/04/2025 12:00:00 AM'."""
+    if not valeur:
+        return valeur
+    from datetime import datetime
+    for fmt in ("%d/%m/%y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(valeur.strip(), fmt).strftime("%d/%m/%Y 12:00:00 AM")
+        except ValueError:
+            pass
+    return valeur  # retourne tel quel si non reconnu
+
+
 def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
     """Extrait les propriétés sans ouvrir le fichier dans Solid Edge (ultra rapide).
     
@@ -270,7 +283,7 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
                 try:
                     p = custom_props.Item(nom_champ)
                     val = str(p.Value).strip() if p.Value is not None else ""
-                    meta[cle_meta] = val
+                    meta[cle_meta] = normaliser_date(val) if "date" in cle_meta else val
                 except:
                     pass
 
@@ -284,7 +297,7 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
                     if nom_lower in ("désignation", "designation", "desig"):
                         meta["designation"] = val
                     elif nom_lower in ("date de création", "date de creation"):
-                        meta["date_creation"] = val
+                        meta["date_creation"] = normaliser_date(val)
                     elif any(n in nom_lower for n in noms_version):
                         meta["version"] = val
                         if debug:
@@ -359,7 +372,7 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                         try:
                             p = prop_set.Item(nom_champ)
                             val = str(p.Value).strip() if p.Value is not None else ""
-                            meta[cle_meta] = val
+                            meta[cle_meta] = normaliser_date(val) if "date" in cle_meta else val
                         except:
                             pass
                     # Itération par index pour les autres champs
@@ -370,7 +383,7 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                             if nom_lower in ("désignation", "designation", "desig"):
                                 meta["designation"] = val
                             elif nom_lower in ("date de création", "date de creation"):
-                                meta["date_creation"] = val
+                                meta["date_creation"] = normaliser_date(val)
                             elif any(n in nom_lower for n in noms_version):
                                 meta["version"] = val
                         except:
@@ -383,6 +396,39 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
         g_metadata_cache.set(doc_id, meta.copy())
     
     return meta
+
+def calculer_indices_precedents(version):
+    """Calcule indice n-1 et n-2 depuis la version courante (logique alphabétique).
+    Ex: B -> (A, -), C -> (B, A), A -> (-, -), - -> (-, -)
+    Gère aussi les doubles lettres: AA -> (Z, -), AB -> (AA, Z)
+    """
+    if not version or version.strip() in ("-", ""):
+        return "-", "-"
+
+    def precedent(v):
+        v = v.strip().upper()
+        if not v:
+            return "-"
+        # Lettre simple: A->-, B->A, Z->Y
+        if len(v) == 1:
+            if v == "A":
+                return "-"
+            return chr(ord(v) - 1)
+        # Double lettre: AA->Z, AB->AA, AZ->AY, BA->AZ
+        last = v[-1]
+        prefix = v[:-1]
+        if last == "A":
+            # Réduire le préfixe
+            new_prefix = precedent(prefix)
+            if new_prefix == "-":
+                return "Z"  # AA -> Z
+            return new_prefix + "Z"
+        return prefix + chr(ord(last) - 1)
+
+    n1 = precedent(version)
+    n2 = precedent(n1) if n1 != "-" else "-"
+    return n1, n2
+
 
 def determiner_classe(nom_fichier, est_projet=False):
     """Détermine la classe PLM en fonction de l'extension du fichier."""
@@ -495,7 +541,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             suffixe = get_suffixe_fichier(nom_fichier)
             chemin_normalise = os.path.normpath(chemin_complet)
             attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
-            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, rev, desig, auteur, date_crea, auteur_modif, date_modif, "", attachement])
+            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, *calculer_indices_precedents(ver), rev, desig, auteur, date_crea, auteur_modif, date_modif, "", attachement])
             compteur_ordre += 1
         
         def explorer_occurrences(occurrences, niveau):
@@ -618,7 +664,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
         ws = wb.active
         ws.title = "Structure"
         
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1", "dia_se", "Attachments"]
+        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "indice n-1", "indice n-2", "revision", "designation", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1", "dia_se", "Attachments"]
         ws.append(headers)
         
         header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
