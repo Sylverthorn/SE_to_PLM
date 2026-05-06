@@ -267,7 +267,7 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
                 
                 # Auteur
                 if prop_name_lower == "auteur":
-                    meta["auteur"] = str(prop.Value).strip()
+                    meta["Auteur"] = str(prop.Value).strip()
                 
                 # Date de création
                 if prop_name_lower == "date de création":
@@ -503,11 +503,25 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
                     occ = occurrences.Item(i)
                     path_reel = ""
                     nom_reel = ""
+                    
+                    # Essayer plusieurs méthodes pour récupérer le chemin
                     try:
                         path_reel = occ.OccurrenceDocument.FullName
                         nom_reel = os.path.basename(path_reel)
                     except:
-                        nom_reel = occ.Name.split(':')[0]
+                        # Fallback 1: OccurrenceFileName
+                        try:
+                            path_reel = occ.OccurrenceFileName
+                            nom_reel = os.path.basename(path_reel)
+                        except:
+                            # Fallback 2: FileName
+                            try:
+                                path_reel = occ.FileName
+                                nom_reel = os.path.basename(path_reel)
+                            except:
+                                # Fallback 3: Utiliser le nom de l'occurrence
+                                nom_reel = occ.Name.split(':')[0]
+                                log(f"  -> Attention: Chemin non trouvé pour {nom_reel}", 'warning')
                     
                     if nom_reel not in dict_occ:
                         dict_occ[nom_reel] = {"qte": 1, "obj": occ, "chemin": path_reel}
@@ -518,7 +532,14 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             for nom, data in dict_occ.items():
                 stats["3d"] += 1
                 classe_3d = determiner_classe(nom)
-                meta = extraire_metadonnees_rapide(data["chemin"])
+                
+                # Si pas de chemin, utiliser des valeurs par défaut
+                if not data["chemin"]:
+                    meta = {"revision": "1", "designation": nom, "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
+                    log(f"  -> Métadonnées par défaut pour {nom} (chemin manquant)", 'warning')
+                else:
+                    meta = extraire_metadonnees_rapide(data["chemin"])
+                
                 ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"], meta["auteur"], meta["date_creation"], meta["auteur_modif"], meta["date_modif"])
                 
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
