@@ -445,7 +445,24 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             log("Solid Edge démarré.", 'success')
         
         app.DisplayAlerts = False
-        doc_racine = app.Documents.Open(chemin_asm)
+
+        # Vérifier si le document est déjà ouvert pour éviter l'ouverture en lecture seule
+        doc_racine = None
+        chemin_asm_norm = os.path.normcase(chemin_asm)
+        try:
+            for doc in app.Documents:
+                try:
+                    if os.path.normcase(doc.FullName) == chemin_asm_norm:
+                        doc_racine = doc
+                        log("Document déjà ouvert, réutilisation de l'instance existante.", 'info')
+                        break
+                except:
+                    pass
+        except:
+            pass
+
+        if doc_racine is None:
+            doc_racine = app.Documents.Open(chemin_asm)
         log("Document chargé.", 'success')
         
         lignes_excel = []
