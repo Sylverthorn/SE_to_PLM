@@ -1,25 +1,50 @@
 import win32com.client
 import os
 
-chemin = r"C:\Users\ykorichi\Desktop\DEV\test\CODEUR SUR ARBRE\3d\ASM - Moto reducteur  codeur.asm"
+# Chemin de votre fichier
+chemin = r"C:\Users\ykorichi\Desktop\DEV\test\CODEUR SUR ARBRE\2d\Connecteur arbre-codeur M6.dft"
 
-print(os.path.exists(chemin))
+print(f"Le fichier existe-t-il ? {os.path.exists(chemin)}")
 
-prop_reader = win32com.client.Dispatch("SolidEdge.FileProperties")
-prop_reader.Open(chemin)
-
-for set_name in ["SummaryInformation", "ExtendedSummaryInformation", "Custom", "DocSummaryInformation"]:
-    print(f"\n=== {set_name} ===")
+if os.path.exists(chemin):
+    # Initialisation de l'objet COM
+    prop_reader = win32com.client.Dispatch("SolidEdge.FileProperties")
+    
     try:
-        ps = prop_reader.Item(set_name)
-        print(f"  Count: {ps.Count}")
-        for i in range(1, ps.Count + 1):
-            try:
-                p = ps.Item(i)
-                print(f"  [{i}] Name='{p.Name}' | Value='{p.Value}' | Type={type(p.Value)}")
-            except Exception as e:
-                print(f"  [{i}] ERREUR: {e}")
-    except Exception as e:
-        print(f"  Non disponible: {e}")
+        # Ouverture du fichier
+        prop_reader.Open(chemin)
+        
+        # 1. On cible l'onglet "Custom"
+        custom_props = prop_reader.Item("Custom")
+        
+        # 2. On cible directement le nom de la propriété voulue
+        nom_recherche = "auteur modif"
+        
+        print(f"\nTentative de récupération de la propriété : '{nom_recherche}'...")
+        
+        try:
+            # Récupération directe par le nom
+            ma_propriete = custom_props.Item(nom_recherche)
+            
+            print("=" * 50)
+            print(f"✅ SUCCÈS ! ")
+            print(f"Nom   : {ma_propriete.Name}")
+            print(f"Valeur: '{ma_propriete.Value}'")
+            print(f"Type  : {type(ma_propriete.Value)}")
+            print("=" * 50)
+            
+        except Exception as e:
+            print(f"\n❌ ERREUR : Impossible de trouver ou lire '{nom_recherche}'.")
+            print(f"Détails techniques : {e}")
+            print("Vérifiez l'orthographe exacte dans Solid Edge (majuscules/espaces).")
 
-prop_reader.Close()
+    except Exception as e:
+        print(f"Erreur lors de l'ouverture des propriétés du fichier : {e}")
+        
+    finally:
+        # On s'assure de TOUJOURS fermer le fichier pour ne pas le bloquer dans Windows
+        try:
+            prop_reader.Close()
+            print("\n[Lecteur de propriétés fermé avec succès]")
+        except:
+            pass
