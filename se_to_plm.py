@@ -244,45 +244,50 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
         prop_reader = win32com.client.Dispatch("SolidEdge.FileProperties")
         prop_reader.Open(chemin_fichier)
         
-        # 1. Lire la désignation (SummaryInformation = 1)
+        # 1. Auteur = ExtendedSummaryInformation -> "Username"
         try:
-            summary_props = prop_reader.Item("SummaryInformation")
-            meta["designation"] = summary_props.Item("Title").Value
+            ext_props = prop_reader.Item("ExtendedSummaryInformation")
+            for i in range(1, ext_props.Count + 1):
+                try:
+                    p = ext_props.Item(i)
+                    if p.Name == "Username":
+                        val = str(p.Value).strip()
+                        if val:
+                            meta["auteur"] = val
+                        break
+                except:
+                    pass
         except:
             pass
-            
-        # 2. Lire la révision/version et les métadonnées (Custom = 4)
-        noms_possibles = ["indice de modification", "revision index", "index", "revision", "rev"]
+
+        # 2. Custom -> Désignation, Date de création, version, auteur_modif, date_modif
+        noms_version = ["indice de modification", "revision index", "index", "revision", "rev"]
         try:
             custom_props = prop_reader.Item("Custom")
             for i in range(1, custom_props.Count + 1):
-                prop = custom_props.Item(i)
-                prop_name_lower = prop.Name.lower()
-                
-                # Version
-                if prop_name_lower in noms_possibles:
-                    meta["version"] = str(prop.Value).strip()
-                    if debug:
-                        print(f"  -> Version trouvée (FileProperties): {meta['version']}")
-                
-                # Auteur
-                if prop_name_lower == "auteur":
-                    meta["Auteur"] = str(prop.Value).strip()
-                
-                # Date de création
-                if prop_name_lower == "date de création":
-                    meta["date_creation"] = str(prop.Value).strip()
-                
-                # Auteur modification
-                if prop_name_lower == "auteur modif":
-                    meta["auteur_modif"] = str(prop.Value).strip()
-                
-                # Date modification
-                if prop_name_lower == "date modif":
-                    meta["date_modif"] = str(prop.Value).strip()
+                try:
+                    prop = custom_props.Item(i)
+                    nom = prop.Name
+                    nom_lower = nom.lower()
+                    val = str(prop.Value).strip() if prop.Value is not None else ""
+
+                    if nom_lower in ("désignation", "designation", "desig"):
+                        meta["designation"] = val
+                    elif nom_lower in ("date de création", "date de creation"):
+                        meta["date_creation"] = val
+                    elif any(n in nom_lower for n in noms_version):
+                        meta["version"] = val
+                        if debug:
+                            print(f"  -> Version: {val}")
+                    elif nom_lower == "auteur modif":
+                        meta["auteur_modif"] = val
+                    elif nom_lower == "date modif":
+                        meta["date_modif"] = val
+                except:
+                    pass
         except:
             pass
-            
+
         prop_reader.Close()
         
     except Exception as e:
@@ -318,78 +323,50 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                 print(f"  -> Cache hit pour {os.path.basename(doc_id)}")
             return cached.copy()
     
-    meta = {"designation": "", "revision": "1", "version": "-"}
-    
+    meta = {"designation": "", "revision": "1", "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
+
     if debug:
         lister_proprietes(doc_obj)
-    
-    # Optimisation: collecter toutes les propriétés en une seule passe
-    custom_props = {}
-    all_props = {}
-    
-    # Collecter Properties -> Custom en une passe
+
+    noms_version = ["indice de modification", "revision index", "modification index", "index", "revision", "rev"]
+
     if hasattr(doc_obj, 'Properties'):
         try:
             for prop_set in doc_obj.Properties:
-                if hasattr(prop_set, 'Name') and prop_set.Name == "Custom":
+                if not hasattr(prop_set, 'Name'):
+                    continue
+                # Auteur depuis ExtendedSummaryInformation -> Username
+                if prop_set.Name == "ExtendedSummaryInformation":
                     for prop in prop_set:
-                        if hasattr(prop, 'Name') and prop.Name:
+                        try:
+                            if prop.Name == "Username":
+                                val = str(prop.Value).strip() if prop.Value else ""
+                                if val:
+                                    meta["auteur"] = val
+                                break
+                        except:
+                            pass
+                # Désignation, dates, version depuis Custom
+                elif prop_set.Name == "Custom":
+                    for prop in prop_set:
+                        try:
                             nom_lower = prop.Name.lower()
-                            if hasattr(prop, 'Value') and prop.Value:
-                                custom_props[nom_lower] = str(prop.Value).strip()
-                    break  # On a trouvé Custom, pas besoin de continuer
+                            val = str(prop.Value).strip() if prop.Value is not None else ""
+                            if nom_lower in ("désignation", "designation", "desig"):
+                                meta["designation"] = val
+                            elif nom_lower in ("date de création", "date de creation"):
+                                meta["date_creation"] = val
+                            elif any(n in nom_lower for n in noms_version):
+                                meta["version"] = val
+                            elif nom_lower == "auteur modif":
+                                meta["auteur_modif"] = val
+                            elif nom_lower == "date modif":
+                                meta["date_modif"] = val
+                        except:
+                            pass
         except:
             pass
-    
-    # Collecter PropertySets en une passe (pour la version uniquement si pas trouvée)
-    if hasattr(doc_obj, 'PropertySets'):
-        try:
-            for prop_set in doc_obj.PropertySets:
-                for prop in prop_set:
-                    if hasattr(prop, 'Name') and prop.Name and hasattr(prop, 'Value') and prop.Value:
-                        nom_lower = prop.Name.lower()
-                        all_props[nom_lower] = str(prop.Value).strip()
-        except:
-            pass
-    
-    # Essayer SummaryInformation pour la désignation (plus rapide)
-    try:
-        meta["designation"] = doc_obj.SummaryInformation.Title
-    except:
-        pass
-    
-    # Si pas trouvé dans SummaryInformation, chercher dans Custom
-    if not meta["designation"]:
-        for key in ["désignation", "designation", "title", "titre"]:
-            if key in custom_props:
-                meta["designation"] = custom_props[key]
-                if debug:
-                    print(f"  -> designation trouvée dans Custom: {meta['designation']}")
-                break
-    
-    # Récupération de l'attribut "indice de modification"
-    noms_possibles = [
-        "indice de modification", "revision index", 
-        "modification index", "index", "revision", "rev"
-    ]
-    
-    # Chercher d'abord dans Custom (plus rapide)
-    for key in custom_props:
-        if any(nom in key for nom in noms_possibles):
-            meta["version"] = custom_props[key]
-            if debug:
-                print(f"  -> Version trouvée dans Custom: {meta['version']}")
-            break
-    
-    # Si pas trouvé, chercher dans PropertySets
-    if meta["version"] == "-":
-        for key in all_props:
-            if any(nom in key for nom in noms_possibles):
-                meta["version"] = all_props[key]
-                if debug:
-                    print(f"  -> Version trouvée dans PropertySets: {meta['version']}")
-                break
-    
+
     # Mettre en cache si activé
     if use_cache and doc_id:
         g_metadata_cache.set(doc_id, meta.copy())
@@ -559,7 +536,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
                     except: pass
         
         log("\nAnalyse de la structure...", 'info')
-        meta_root = extraire_metadonnees_rapide(doc_racine.FullName)
+        meta_root = extraire_metadonnees(doc_racine)
         nom_root = os.path.basename(doc_racine.FullName)
         ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur_modif"], meta_root["date_modif"])
         
