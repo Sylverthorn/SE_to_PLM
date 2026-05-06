@@ -1,695 +1,285 @@
-import win32com.client
-import openpyxl
+import sys
 import os
-import time
-import pythoncom
-import tkinter as tk
-from tkinter import filedialog
-from openpyxl.styles import Font, PatternFill, Alignment
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
-import threading
+from datetime import datetime
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox, QComboBox, QDialog, QProgressBar)
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
+from PyQt5.QtGui import QTextCursor, QColor
 
-def demander_fichier_asm():
-    """Ouvre l'explorateur pour choisir le fichier ASM."""
-    root = tk.Tk()
-    root.withdraw()
-    return filedialog.askopenfilename(
-        title="Sélectionnez l'assemblage principal (.asm)", 
-        filetypes=[("Assemblage Solid Edge", "*.asm")]
-    )
+from se_to_plm import generer_export_excel
 
-def _scanner_dossier_thread_safe(args):
-    """Fonction worker pour scanner un dossier (thread-safe)."""
-    chemin_dossier, depth, max_depth = args
-    plans_trouves = []
-    sous_dossiers = []
-    dossiers_count = 1
+class ExtractionThread(QThread):
+    log_signal = pyqtSignal(str, str)
+    finished_signal = pyqtSignal()
+    progress_signal = pyqtSignal(int, int, str)  # (valeur, maximum, message)
+
+    def __init__(self, chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche_dft="les_deux"):
+        super().__init__()
+        self.chemin_asm = chemin_asm
+        self.dossier_sortie = dossier_sortie
+        self.nom_sortie = nom_sortie
+        self.dossier_dft = dossier_dft
+        self.mode_recherche_dft = mode_recherche_dft
+        self._cancelled = False
     
-    try:
-        with os.scandir(chemin_dossier) as it:
-            for entry in it:
-                if entry.is_file() and entry.name.lower().endswith('.dft'):
-                    nom_base = os.path.splitext(entry.name)[0].lower()
-                    plans_trouves.append((nom_base, entry.path))
-                elif entry.is_dir() and depth < max_depth:
-                    sous_dossiers.append((entry.path, depth + 1))
-    except (PermissionError, OSError):
-        pass
-    
-    return plans_trouves, sous_dossiers, dossiers_count
+    def cancel(self):
+        self._cancelled = True
 
-def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None, mode_recherche="les_deux", max_depth=3, callback_progress=None):
-    """Parcourt le dossier et les sous-dossiers pour trouver tous les plans .dft.
-    Version multithreadée avec ThreadPoolExecutor pour I/O parallèles.
-    
-    Modes de recherche:
-    - "arborescence": cherche uniquement dans l'arborescence remontée depuis l'ASM
-    - "dossier_specifique": cherche uniquement dans le dossier spécifique
-    - "les_deux": cherche dans les deux (comportement par défaut)
-    
-    Args:
-        callback_progress: Fonction appelée avec (dossiers_scannes, plans_trouves, total_a_faire)
-    """
-    index = {}
-    if not chemin_asm_initial:
-        return index
-
-    print(f"--- Indexation des plans (.dft) [Mode: {mode_recherche}] ---")
-
-    dossiers_a_scanner = []
-
-    # Mode arborescence ou les_deux: ajouter l'arborescence depuis l'ASM
-    if mode_recherche in ["arborescence", "les_deux"]:
-        racine_projet = chemin_asm_initial
-        for _ in range(2):
-            parent = os.path.dirname(racine_projet)
-            if not parent or parent == racine_projet:
-                break
-            racine_projet = parent
-        
-        print(f"Dossier racine : {racine_projet}")
-        dossiers_a_scanner.append((racine_projet, 0))
-
-    # Mode dossier_specifique ou les_deux: ajouter le dossier spécifique
-    if mode_recherche in ["dossier_specifique", "les_deux"]:
-        if dossier_dft and os.path.exists(dossier_dft):
-            print(f"Dossier spécifique : {dossier_dft}")
-            dossiers_a_scanner.append((dossier_dft, 0))
-        elif mode_recherche == "dossier_specifique":
-            print("AVERTISSEMENT: Aucun dossier spécifique n'a été sélectionné!")
-            return index
-
-    print(f"Profondeur max : {max_depth} niveaux")
-
-    dossiers_traites = 0
-    pile = dossiers_a_scanner.copy()
-    
-    # Utiliser ThreadPoolExecutor pour paralléliser le scan
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        while pile:
-            # Prendre un batch de dossiers à traiter
-            batch = []
-            while pile and len(batch) < 16:
-                batch.append(pile.pop(0) + (max_depth,))
-            
-            if not batch:
-                break
-            
-            # Soumettre les tâches en parallèle
-            futures = {executor.submit(_scanner_dossier_thread_safe, args): args for args in batch}
-            
-            # Collecter les résultats
-            for future in as_completed(futures):
-                try:
-                    plans_trouves, sous_dossiers, count = future.result()
-                    
-                    # Ajouter les plans trouvés
-                    for nom_base, chemin in plans_trouves:
-                        index[nom_base] = chemin
-                    
-                    # Ajouter les sous-dossiers à la pile
-                    pile.extend(sous_dossiers)
-                    dossiers_traites += count
-                    
-                    # Callback de progression
-                    if callback_progress and dossiers_traites % 50 == 0:
-                        callback_progress(dossiers_traites, len(index), len(pile) + dossiers_traites)
-                        
-                except Exception as e:
-                    print(f"  Erreur scan: {e}")
-            
-            if dossiers_traites % 100 == 0:
-                print(f"  ... {dossiers_traites} dossiers scannés, {len(index)} plans trouvés")
-
-    print(f"-> {len(index)} plan(s) détecté(s) dans {dossiers_traites} dossiers")
-    return index
-
-class MetadataCache:
-    """Cache thread-safe pour les métadonnées des documents."""
-    def __init__(self, max_size=1000):
-        self._cache = {}
-        self._lock = threading.Lock()
-        self._max_size = max_size
-        self._access_order = []
-    
-    def get(self, key):
-        with self._lock:
-            if key in self._cache:
-                # Mettre à jour l'ordre d'accès (LRU)
-                self._access_order.remove(key)
-                self._access_order.append(key)
-                return self._cache[key]
-            return None
-    
-    def set(self, key, value):
-        with self._lock:
-            if key in self._cache:
-                self._access_order.remove(key)
-            elif len(self._cache) >= self._max_size:
-                # Éviction LRU
-                oldest = self._access_order.pop(0)
-                del self._cache[oldest]
-            
-            self._cache[key] = value
-            self._access_order.append(key)
-    
-    def clear(self):
-        with self._lock:
-            self._cache.clear()
-            self._access_order.clear()
-
-# Instance globale du cache
-g_metadata_cache = MetadataCache()
-
-def lister_proprietes(doc_obj):
-    """Liste toutes les propriétés disponibles pour le débogage."""
-    try:
-        print(f"  --- Propriétés disponibles ---")
-        print(f"  Type de document: {type(doc_obj)}")
-        
-        # Lister les attributs principaux
-        attrs = [attr for attr in dir(doc_obj) if not attr.startswith('_')]
-        print(f"  Attributs: {attrs[:20]}...")  # Limiter l'affichage
-        
-        # Essayer Properties (au lieu de PropertySets)
-        if hasattr(doc_obj, 'Properties'):
-            print(f"  Properties disponible")
-            try:
-                for prop_set in doc_obj.Properties:
-                    nom_set = prop_set.Name if hasattr(prop_set, 'Name') else "Sans nom"
-                    print(f"    PropertySet: {nom_set}")
-                    if nom_set == "Custom":
-                        print(f"      Propriétés Custom:")
-                        for prop in prop_set:
-                            nom = prop.Name if hasattr(prop, 'Name') else "Sans nom"
-                            valeur = prop.Value if hasattr(prop, 'Value') else ""
-                            print(f"        - {nom}: {valeur}")
-            except Exception as e:
-                print(f"    Erreur Properties: {e}")
-        
-        # Essayer PropertySets
-        if hasattr(doc_obj, 'PropertySets'):
-            print(f"  PropertySets disponible")
-            try:
-                for prop_set in doc_obj.PropertySets:
-                    print(f"  PropertySet: {prop_set.Name if hasattr(prop_set, 'Name') else 'Unknown'}")
-                    for prop in prop_set:
-                        nom = prop.Name if prop.Name else "Sans nom"
-                        valeur = prop.Value if prop.Value is not None else ""
-                        print(f"    - {nom}: {valeur}")
-            except Exception as e:
-                print(f"    Erreur PropertySets: {e}")
-        
-        # Essayer SummaryInformation
-        if hasattr(doc_obj, 'SummaryInformation'):
-            print(f"  SummaryInformation disponible")
-            try:
-                print(f"    Title: {doc_obj.SummaryInformation.Title}")
-            except: pass
-    except Exception as e:
-        print(f"  Erreur listing propriétés: {e}")
-
-def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
-    """Extrait les propriétés sans ouvrir le fichier dans Solid Edge (ultra rapide).
-    
-    Utilise SolidEdge.FileProperties qui lit les métadonnées directement depuis le fichier
-    sans lancer l'interface graphique de Solid Edge.
-    
-    Args:
-        chemin_fichier: Chemin complet du fichier (.asm, .par, .psm, .dft)
-        debug: Activer le mode debug
-        use_cache: Utiliser le cache pour éviter les doublons
-    """
-    meta = {
-        "designation": "", 
-        "revision": "1", 
-        "version": "-",
-        "auteur": "",
-        "date_creation": "",
-        "auteur_modif": "",
-        "date_modif": ""
-    }
-    
-    # Vérifier le cache si activé
-    if use_cache:
-        cached = g_metadata_cache.get(chemin_fichier)
-        if cached:
-            if debug:
-                print(f"  -> Cache hit pour {os.path.basename(chemin_fichier)}")
-            return cached.copy()
-    
-    try:
-        # Appelle le lecteur de propriétés (ultra rapide, ne lance pas l'interface 3D)
-        prop_reader = win32com.client.Dispatch("SolidEdge.FileProperties")
-        prop_reader.Open(chemin_fichier)
-        
-        # 1. Auteur = ExtendedSummaryInformation -> "Username"
+    def run(self):
         try:
-            ext_props = prop_reader.Item("ExtendedSummaryInformation")
-            for i in range(1, ext_props.Count + 1):
-                try:
-                    p = ext_props.Item(i)
-                    if p.Name == "Username":
-                        val = str(p.Value).strip()
-                        if val:
-                            meta["auteur"] = val
-                        break
-                except:
-                    pass
-        except:
-            pass
-
-        # 2. Custom -> Désignation, Date de création, version, auteur_modif, date_modif
-        noms_version = ["indice de modification", "revision index", "index", "revision", "rev"]
-        try:
-            custom_props = prop_reader.Item("Custom")
-
-            # Accès direct par nom pour les champs sensibles à la casse
-            for nom_champ, cle_meta in [("auteur modif", "auteur_modif"), ("date modif", "date_modif")]:
-                try:
-                    p = custom_props.Item(nom_champ)
-                    val = str(p.Value).strip() if p.Value is not None else ""
-                    meta[cle_meta] = val
-                except:
-                    pass
-
-            # Itération par index pour les autres champs
-            for i in range(1, custom_props.Count + 1):
-                try:
-                    prop = custom_props.Item(i)
-                    nom_lower = prop.Name.lower()
-                    val = str(prop.Value).strip() if prop.Value is not None else ""
-
-                    if nom_lower in ("désignation", "designation", "desig"):
-                        meta["designation"] = val
-                    elif nom_lower in ("date de création", "date de creation"):
-                        meta["date_creation"] = val
-                    elif any(n in nom_lower for n in noms_version):
-                        meta["version"] = val
-                        if debug:
-                            print(f"  -> Version: {val}")
-                except:
-                    pass
-        except:
-            pass
-
-        prop_reader.Close()
+            # Définir les callbacks pour le moteur
+            def callback_log(message, msg_type):
+                self.log_signal.emit(message, msg_type)
+            
+            def callback_progress(value, maximum, message):
+                self.progress_signal.emit(value, maximum, message)
+            
+            def check_cancelled():
+                return self._cancelled
+            
+            # Utiliser le moteur centralisé
+            resultat = generer_export_excel(
+                chemin_asm=self.chemin_asm,
+                dossier_sortie=self.dossier_sortie,
+                nom_sortie=self.nom_sortie,
+                dossier_dft=self.dossier_dft,
+                mode_recherche=self.mode_recherche_dft,
+                callback_log=callback_log,
+                callback_progress=callback_progress,
+                check_cancelled=check_cancelled
+            )
+            
+        except Exception as e:
+            self.log_signal.emit(f"\nErreur : {e}", 'error')
+            self.log_signal.emit("=" * 60, 'error')
         
-    except Exception as e:
-        if debug:
-            print(f"  -> Erreur lecture rapide pour {os.path.basename(chemin_fichier)}: {e}")
-    
-    # Mettre en cache si activé
-    if use_cache:
-        g_metadata_cache.set(chemin_fichier, meta.copy())
-    
-    return meta
+        finally:
+            self.finished_signal.emit()
 
-def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
-    """Récupère le titre, la version et force la révision à 1 depuis Solid Edge.
-    
-    Args:
-        doc_obj: Objet document Solid Edge
-        debug: Activer le mode debug
-        use_cache: Utiliser le cache pour éviter les doublons
-    """
-    # Récupérer l'identifiant unique du document
-    doc_id = None
-    try:
-        doc_id = doc_obj.FullName
-    except:
-        pass
-    
-    # Vérifier le cache si activé et document identifié
-    if use_cache and doc_id:
-        cached = g_metadata_cache.get(doc_id)
-        if cached:
-            if debug:
-                print(f"  -> Cache hit pour {os.path.basename(doc_id)}")
-            return cached.copy()
-    
-    meta = {"designation": "", "revision": "1", "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
-
-    if debug:
-        lister_proprietes(doc_obj)
-
-    noms_version = ["indice de modification", "revision index", "modification index", "index", "revision", "rev"]
-
-    if hasattr(doc_obj, 'Properties'):
-        try:
-            for prop_set in doc_obj.Properties:
-                if not hasattr(prop_set, 'Name'):
-                    continue
-                # Auteur depuis ExtendedSummaryInformation -> Username
-                if prop_set.Name == "ExtendedSummaryInformation":
-                    for prop in prop_set:
-                        try:
-                            if prop.Name == "Username":
-                                val = str(prop.Value).strip() if prop.Value else ""
-                                if val:
-                                    meta["auteur"] = val
-                                break
-                        except:
-                            pass
-                # Désignation, dates, version depuis Custom
-                elif prop_set.Name == "Custom":
-                    # Accès direct par nom pour les champs sensibles à la casse
-                    for nom_champ, cle_meta in [("auteur modif", "auteur_modif"), ("date modif", "date_modif")]:
-                        try:
-                            p = prop_set.Item(nom_champ)
-                            val = str(p.Value).strip() if p.Value is not None else ""
-                            meta[cle_meta] = val
-                        except:
-                            pass
-                    # Itération par index pour les autres champs
-                    for prop in prop_set:
-                        try:
-                            nom_lower = prop.Name.lower()
-                            val = str(prop.Value).strip() if prop.Value is not None else ""
-                            if nom_lower in ("désignation", "designation", "desig"):
-                                meta["designation"] = val
-                            elif nom_lower in ("date de création", "date de creation"):
-                                meta["date_creation"] = val
-                            elif any(n in nom_lower for n in noms_version):
-                                meta["version"] = val
-                        except:
-                            pass
-        except:
-            pass
-
-    # Mettre en cache si activé
-    if use_cache and doc_id:
-        g_metadata_cache.set(doc_id, meta.copy())
-    
-    return meta
-
-def determiner_classe(nom_fichier, est_projet=False):
-    """Détermine la classe PLM en fonction de l'extension du fichier."""
-    if est_projet: return "SUB_ASSY_A"
-    ext = os.path.splitext(nom_fichier)[1].lower()
-    if ext == '.asm': return "SUB_ASSY_A"
-    if ext in ['.par', '.psm']: return "PART_A"
-    if ext == '.dft': return "CAD_DRAWING_A"
-    return "Folder"
-
-def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche="les_deux", 
-                         callback_log=None, callback_progress=None, check_cancelled=None):
-    """
-    Fonction moteur principale pour générer l'export PLM.
-    
-    Args:
-        chemin_asm: Chemin du fichier assemblage principal
-        dossier_sortie: Dossier de sortie pour le fichier Excel
-        nom_sortie: Nom du fichier de sortie
-        dossier_dft: Dossier spécifique pour les plans (optionnel)
-        mode_recherche: Mode de recherche des plans ("arborescence", "dossier_specifique", "les_deux")
-        callback_log: Fonction callback(message, type) pour les logs (type: 'info', 'success', 'error', 'warning')
-        callback_progress: Fonction callback(valeur, maximum, message) pour la progression
-        check_cancelled: Fonction callback() qui retourne True si l'opération doit être annulée
-    
-    Returns:
-        dict: {'chemin_fichier': chemin du fichier généré, 'stats': {'3d': int, '2d': int}}
-    """
-    # Fonctions utilitaires pour les logs
-    def log(message, msg_type='info'):
-        if callback_log:
-            callback_log(message, msg_type)
-        else:
-            print(message)
-    
-    def progress(value, maximum, message):
-        if callback_progress:
-            callback_progress(value, maximum, message)
-    
-    def is_cancelled():
-        if check_cancelled:
-            return check_cancelled()
-        return False
-    
-    try:
-        log("=" * 60, 'info')
-        log("Début de l'extraction PLM", 'info')
-        log("=" * 60, 'info')
-        progress(0, 100, "Initialisation...")
-
-        # Callback pour la progression de l'indexation
-        def on_index_progress(scanned, found, total):
-            if total > 0:
-                pct = min(10, int((scanned / total) * 10))
-                progress(pct, 100, f"Indexation: {scanned} dossiers scannés, {found} plans trouvés")
-
-        log(f"\n--- Indexation des plans (.dft) [Mode: {mode_recherche}] ---", 'info')
-        progress(0, 100, "Indexation des plans...")
-        index_plans = indexer_les_plans_projet_entier(chemin_asm, dossier_dft, mode_recherche, callback_progress=on_index_progress)
-        log(f"-> {len(index_plans)} plan(s) détecté(s).", 'info')
-        progress(10, 100, f"{len(index_plans)} plans indexés")
+class PLMExtractorGUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Extracteur PLM - Solid Edge")
+        self.setGeometry(100, 100, 800, 600)
+        self.extraction_en_cours = False
         
-        log("\nConnexion à Solid Edge...", 'info')
+        self.appliquer_style()
+        self.creer_interface()
+    
+    def closeEvent(self, event):
+        """Fermer Solid Edge quand l'application est fermée avec une fenêtre de chargement."""
+        # Créer une fenêtre de chargement
+        loading_dialog = QDialog(self)
+        loading_dialog.setWindowTitle("Fermeture")
+        loading_dialog.setFixedSize(300, 100)
+        layout = QVBoxLayout(loading_dialog)
+        label = QLabel("Fermeture de Solid Edge...")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        loading_dialog.show()
+        
+        # Forcer la mise à jour de l'interface
+        QApplication.processEvents()
+        
         try:
-            app = win32com.client.GetActiveObject("SolidEdge.Application")
-            log("Connecté à l'instance existante de Solid Edge.", 'success')
-        except pythoncom.com_error:
-            log("Démarrage de Solid Edge en arrière-plan...", 'info')
             app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
-            app.Visible = False
-            log("Solid Edge démarré.", 'success')
-        
-        app.DisplayAlerts = False
-
-        # Vérifier si le document est déjà ouvert pour éviter l'ouverture en lecture seule
-        doc_racine = None
-        chemin_asm_norm = os.path.normcase(chemin_asm)
-        try:
-            for doc in app.Documents:
-                try:
-                    if os.path.normcase(doc.FullName) == chemin_asm_norm:
-                        doc_racine = doc
-                        log("Document déjà ouvert, réutilisation de l'instance existante.", 'info')
-                        break
-                except:
-                    pass
+            app.Quit()
         except:
             pass
+        
+        loading_dialog.close()
+        event.accept()
+    
+    def appliquer_style(self):
+        chemin_style = os.path.join(os.path.dirname(__file__), 'style.qss')
+        if os.path.exists(chemin_style):
+            with open(chemin_style, 'r', encoding='utf-8') as f:
+                self.setStyleSheet(f.read())
+        
+    def creer_interface(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(10)
+        
+        asm_layout = QHBoxLayout()
+        asm_layout.addWidget(QLabel("Fichier ASM :"))
+        self.chemin_asm_edit = QLineEdit()
+        self.chemin_asm_edit.setReadOnly(True)
+        asm_layout.addWidget(self.chemin_asm_edit)
+        btn_parcourir = QPushButton("Parcourir...")
+        btn_parcourir.clicked.connect(self.choisir_fichier_asm)
+        asm_layout.addWidget(btn_parcourir)
+        main_layout.addLayout(asm_layout)
+        
+        # Mode de recherche DFT
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode recherche DFT :"))
+        self.mode_dft_combo = QComboBox()
+        self.mode_dft_combo.addItems([
+            "Arborescence uniquement",
+            "Dossier spécifique uniquement",
+            "Les deux (arborescence + dossier)"
+        ])
+        self.mode_dft_combo.setCurrentIndex(2)  # "Les deux" par défaut
+        self.mode_dft_combo.currentIndexChanged.connect(self.on_mode_dft_changed)
+        mode_layout.addWidget(self.mode_dft_combo)
+        main_layout.addLayout(mode_layout)
 
-        if doc_racine is None:
-            doc_racine = app.Documents.Open(chemin_asm)
-        log("Document chargé.", 'success')
+        # Dossier DFT spécifique
+        dft_layout = QHBoxLayout()
+        dft_layout.addWidget(QLabel("Dossier plans (.dft) :"))
+        self.dossier_dft_edit = QLineEdit()
+        self.dossier_dft_edit.setReadOnly(True)
+        self.dossier_dft_edit.setPlaceholderText("Sélectionner un dossier...")
+        self.dossier_dft_edit.setEnabled(False)  # Désactivé par défaut
+        dft_layout.addWidget(self.dossier_dft_edit)
+        self.btn_parcourir_dft = QPushButton("Parcourir...")
+        self.btn_parcourir_dft.clicked.connect(self.choisir_dossier_dft)
+        self.btn_parcourir_dft.setEnabled(False)  # Désactivé par défaut
+        dft_layout.addWidget(self.btn_parcourir_dft)
+        main_layout.addLayout(dft_layout)
         
-        lignes_excel = []
-        compteur_ordre = 1
-        liste_plans_a_rajouter = []
-        stats = {"3d": 0, "2d": 0}
+        sortie_layout = QHBoxLayout()
+        sortie_layout.addWidget(QLabel("Nom de sortie :"))
+        self.nom_sortie_edit = QLineEdit(f"Export_PLM_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+        sortie_layout.addWidget(self.nom_sortie_edit)
+        main_layout.addLayout(sortie_layout)
         
-        def get_suffixe_fichier(nom_fichier):
-            ext = os.path.splitext(nom_fichier)[1].lower()
-            if ext == '.asm': return "(ASM)"
-            elif ext in ['.par', '.psm']: return "(PRT)"
-            elif ext == '.dft': return "(DRW)"
-            return ""
+        self.dossier_sortie = os.path.join(os.path.expanduser("~"), "Documents", "Exports_PLM")
+        lbl_dossier = QLabel(f"Dossier : {self.dossier_sortie}")
+        lbl_dossier.setStyleSheet("color: gray; font-style: italic;")
+        main_layout.addWidget(lbl_dossier)
         
-        def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-", auteur="", date_crea="", auteur_modif="", date_modif=""):
-            nonlocal compteur_ordre
-            ref_util = os.path.splitext(nom_fichier)[0]
-            special_cad = os.path.splitext(nom_fichier)[0]
-            suffixe = get_suffixe_fichier(nom_fichier)
-            chemin_normalise = os.path.normpath(chemin_complet)
-            attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
-            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, rev, desig, "", attachement, auteur, date_crea, auteur_modif, date_modif])
-            compteur_ordre += 1
+        self.btn_extraire = QPushButton("Lancer l'extraction")
+        self.btn_extraire.clicked.connect(self.lancer_extraction)
+        self.btn_extraire.setMinimumHeight(40)
+        main_layout.addWidget(self.btn_extraire)
         
-        def explorer_occurrences(occurrences, niveau):
-            nonlocal stats
-            if occurrences is None: return
-            
-            dict_occ = {}
-            for i in range(1, occurrences.Count + 1):
-                try:
-                    occ = occurrences.Item(i)
-                    path_reel = ""
-                    nom_reel = ""
-                    
-                    # Essayer plusieurs méthodes pour récupérer le chemin
-                    try:
-                        path_reel = occ.OccurrenceDocument.FullName
-                        nom_reel = os.path.basename(path_reel)
-                    except:
-                        # Fallback 1: OccurrenceFileName
-                        try:
-                            path_reel = occ.OccurrenceFileName
-                            nom_reel = os.path.basename(path_reel)
-                        except:
-                            # Fallback 2: FileName
-                            try:
-                                path_reel = occ.FileName
-                                nom_reel = os.path.basename(path_reel)
-                            except:
-                                # Fallback 3: Utiliser le nom de l'occurrence
-                                nom_reel = occ.Name.split(':')[0]
-                                log(f"  -> Attention: Chemin non trouvé pour {nom_reel}", 'warning')
-                    
-                    if nom_reel not in dict_occ:
-                        dict_occ[nom_reel] = {"qte": 1, "obj": occ, "chemin": path_reel}
-                    else:
-                        dict_occ[nom_reel]["qte"] += 1
-                except: continue
-            
-            for nom, data in dict_occ.items():
-                stats["3d"] += 1
-                classe_3d = determiner_classe(nom)
-                
-                # Si pas de chemin, utiliser des valeurs par défaut
-                if not data["chemin"]:
-                    meta = {"revision": "1", "designation": nom, "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
-                    log(f"  -> Métadonnées par défaut pour {nom} (chemin manquant)", 'warning')
-                else:
-                    meta = extraire_metadonnees_rapide(data["chemin"])
-                
-                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"], meta["auteur"], meta["date_creation"], meta["auteur_modif"], meta["date_modif"])
-                
-                nom_sans_ext = os.path.splitext(nom)[0].lower()
-                if nom_sans_ext in index_plans:
-                    chemin_dft = index_plans[nom_sans_ext]
-                    nom_dft = os.path.basename(chemin_dft)
-                    liste_plans_a_rajouter.append({
-                        "dft_nom": nom_dft, "dft_path": chemin_dft,
-                        "src_nom": nom, "src_path": data["chemin"],
-                        "src_classe": classe_3d, "src_rev": meta["revision"], "src_desig": meta["designation"],
-                        "src_ver": meta["version"]
-                    })
-                    stats["2d"] += 1
-                
-                if data["obj"].Subassembly:
-                    try: explorer_occurrences(data["obj"].OccurrenceDocument.Occurrences, niveau + 1)
-                    except: pass
+        # Barre de progression
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%p% - %v")
+        main_layout.addWidget(self.progress_bar)
         
-        log("\nAnalyse de la structure...", 'info')
-        meta_root = extraire_metadonnees(doc_racine)
-        nom_root = os.path.basename(doc_racine.FullName)
-        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur_modif"], meta_root["date_modif"])
+        self.lbl_progress = QLabel("Prêt")
+        self.lbl_progress.setAlignment(Qt.AlignCenter)
+        self.lbl_progress.setStyleSheet("color: gray; font-size: 11px;")
+        main_layout.addWidget(self.lbl_progress)
         
-        nom_root_pur = os.path.splitext(nom_root)[0].lower()
-        if nom_root_pur in index_plans:
-            path_dft_root = index_plans[nom_root_pur]
-            nom_dft_root = os.path.basename(path_dft_root)
-            liste_plans_a_rajouter.append({
-                "dft_nom": nom_dft_root, "dft_path": path_dft_root,
-                "src_nom": nom_root, "src_path": doc_racine.FullName,
-                "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
-                "src_ver": meta_root["version"]
-            })
-            stats["2d"] += 1
-        
-        explorer_occurrences(doc_racine.Occurrences, 1)
-        
-        log("\nExtraction métadonnées des plans...", 'info')
-        progress(50, 100, "Extraction des métadonnées des plans...")
-        
-        plans_uniques = {}
-        for item in liste_plans_a_rajouter:
-            if item["dft_path"] not in plans_uniques:
-                plans_uniques[item["dft_path"]] = item
-        
-        plans_list = list(plans_uniques.values())
-        total_plans = len(plans_list)
-        plans_deja_traites = set()
-        
-        for idx, item in enumerate(plans_list):
-            if is_cancelled():
-                break
-            
-            if idx % 5 == 0 and total_plans > 0:
-                progress_pct = 50 + int((idx / total_plans) * 20)
-                progress(progress_pct, 100, f"Plan {idx+1}/{total_plans}: {item['dft_nom'][:30]}...")
-            
-            if item["dft_path"] not in plans_deja_traites:
-                meta_dft = extraire_metadonnees_rapide(item["dft_path"])
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"], meta_dft["auteur"], meta_dft["date_creation"], meta_dft["auteur_modif"], meta_dft["date_modif"])
-                ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"], "", "", "", "")
-                plans_deja_traites.add(item["dft_path"])
-        
-        log(f"Analyse terminée : {stats['3d']} fichiers 3D, {stats['2d']} plans", 'success')
-        progress(70, 100, f"Analyse terminée: {stats['3d']} fichiers 3D, {stats['2d']} plans")
-        
-        log("\nGénération du fichier Excel...", 'info')
-        progress(75, 100, "Génération du fichier Excel...")
-        
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Structure"
-        
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1"]
-        ws.append(headers)
-        
-        header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
-        orange_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-        
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-            cell.fill = header_fill if cell.column < 13 else orange_fill
-            cell.alignment = Alignment(horizontal="left")
-        
-        progress(80, 100, "Écriture des données...")
-        for l in lignes_excel: ws.append(l)
-        
-        progress(90, 100, "Calcul des largeurs de colonnes...")
-        columns = list(ws.columns)
-        
-        def calc_column_width(col_data):
-            col_cells, idx = col_data
-            max_length = 0
-            for cell in col_cells:
-                try: max_length = max(max_length, len(str(cell.value)))
-                except: pass
-            return (idx, max_length + 2)
-        
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(calc_column_width, (col, i)) for i, col in enumerate(columns)]
-            for future in futures:
-                idx, width = future.result()
-                ws.column_dimensions[columns[idx][0].column_letter].width = width
-        
-        if not nom_sortie.endswith('.xlsx'):
-            nom_sortie += '.xlsx'
-        
-        chemin_complet = os.path.join(dossier_sortie, nom_sortie)
-        progress(95, 100, "Sauvegarde du fichier...")
-        wb.save(chemin_complet)
-        
-        progress(100, 100, "Terminé!")
-        log(f"\nFichier généré : {chemin_complet}", 'success')
-        log("=" * 60, 'info')
-        log("Extraction terminée avec succès !", 'success')
-        
-        return {'chemin_fichier': chemin_complet, 'stats': stats}
-        
-    except Exception as e:
-        log(f"\nErreur : {e}", 'error')
-        log("=" * 60, 'error')
-        raise
-
-def lancer_extraction_plm():
-    try:
-        chemin_asm = demander_fichier_asm()
-        if not chemin_asm: return
-
-        dossier_sortie = os.path.dirname(chemin_asm)
-        nom_sortie = f"Export_PLM_{int(time.time())}.xlsx"
-        
-        # Utiliser le moteur centralisé
-        resultat = generer_export_excel(
-            chemin_asm=chemin_asm,
-            dossier_sortie=dossier_sortie,
-            nom_sortie=nom_sortie,
-            dossier_dft=None,
-            mode_recherche="les_deux"
+        main_layout.addWidget(QLabel("Console de progression :"))
+        self.console = QTextEdit()
+        self.console.setReadOnly(True)
+        main_layout.addWidget(self.console)
+    
+    def choisir_fichier_asm(self):
+        chemin, _ = QFileDialog.getOpenFileName(
+            self,
+            "Sélectionnez l'assemblage principal (.asm)",
+            "",
+            "Assemblage Solid Edge (*.asm)"
         )
-        
-        print(f"\nFichier généré : {resultat['chemin_fichier']}")
-        print(f"3D: {resultat['stats']['3d']} | Plans: {resultat['stats']['2d']}")
+        if chemin:
+            self.chemin_asm_edit.setText(chemin)
+            self.log(f"Fichier sélectionné : {chemin}", 'info')
+            nom_asm = os.path.splitext(os.path.basename(chemin))[0]
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            self.nom_sortie_edit.setText(f"Export_PLM_{nom_asm}_{timestamp}.xlsx")
+    
+    def on_mode_dft_changed(self, index):
+        """Active/désactive le champ dossier DFT selon le mode sélectionné."""
+        # Mode 0 = Arborescence uniquement (désactivé)
+        # Mode 1 = Dossier spécifique uniquement (activé)
+        # Mode 2 = Les deux (activé)
+        if index == 1:  # Dossier spécifique uniquement
+            self.dossier_dft_edit.setEnabled(True)
+            self.btn_parcourir_dft.setEnabled(True)
+        elif index == 2:  # Les deux
+            self.dossier_dft_edit.setEnabled(True)
+            self.btn_parcourir_dft.setEnabled(True)
+        else:  # Arborescence uniquement
+            self.dossier_dft_edit.setEnabled(False)
+            self.btn_parcourir_dft.setEnabled(False)
+            self.dossier_dft_edit.clear()
 
-    except Exception as e:
-        print(f"\nErreur : {e}")
+    def choisir_dossier_dft(self):
+        dossier = QFileDialog.getExistingDirectory(
+            self,
+            "Sélectionnez le dossier contenant les plans (.dft)",
+            ""
+        )
+        if dossier:
+            self.dossier_dft_edit.setText(dossier)
+            self.log(f"Dossier plans sélectionné : {dossier}", 'info')
+
+    def log(self, message, msg_type='info'):
+        cursor = self.console.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        color = QColor('black')
+        if msg_type == 'success': color = QColor('green')
+        elif msg_type == 'error': color = QColor('red')
+        elif msg_type == 'warning': color = QColor('orange')
+        self.console.setTextColor(color)
+        cursor.insertText(message + '\n')
+        self.console.setTextCursor(cursor)
+        self.console.ensureCursorVisible()
+    
+    def lancer_extraction(self):
+        if self.extraction_en_cours:
+            QMessageBox.warning(self, "Attention", "Une extraction est déjà en cours.")
+            return
+        
+        chemin_asm = self.chemin_asm_edit.text()
+        if not chemin_asm:
+            QMessageBox.warning(self, "Attention", "Veuillez sélectionner un fichier ASM.")
+            return
+        
+        if not os.path.exists(chemin_asm):
+            QMessageBox.critical(self, "Erreur", "Le fichier ASM sélectionné n'existe pas.")
+            return
+        
+        os.makedirs(self.dossier_sortie, exist_ok=True)
+        self.extraction_en_cours = True
+        self.btn_extraire.setEnabled(False)
+        self.btn_extraire.setText("Extraction en cours...")
+        
+        dossier_dft = self.dossier_dft_edit.text() if self.dossier_dft_edit.text() else None
+        
+        # Convertir l'index du combo en mode de recherche
+        mode_index = self.mode_dft_combo.currentIndex()
+        if mode_index == 0:
+            mode_recherche = "arborescence"
+        elif mode_index == 1:
+            mode_recherche = "dossier_specifique"
+        else:
+            mode_recherche = "les_deux"
+        
+        self.thread = ExtractionThread(chemin_asm, self.dossier_sortie, self.nom_sortie_edit.text(), dossier_dft, mode_recherche)
+        self.thread.log_signal.connect(self.log)
+        self.thread.progress_signal.connect(self.update_progress)
+        self.thread.finished_signal.connect(self.extraction_terminee)
+        self.thread.start()
+    
+    def update_progress(self, value, maximum, message):
+        self.progress_bar.setValue(value)
+        self.progress_bar.setMaximum(maximum)
+        self.lbl_progress.setText(message)
+    
+    def extraction_terminee(self):
+        self.extraction_en_cours = False
+        self.btn_extraire.setEnabled(True)
+        self.btn_extraire.setText("Lancer l'extraction")
+        self.progress_bar.setValue(0)
+        self.lbl_progress.setText("Prêt")
+
+def main():
+    app = QApplication(sys.argv)
+    window = PLMExtractorGUI()
+    window.show()
+    sys.exit(app.exec_())
 
 if __name__ == "__main__":
-    lancer_extraction_plm()
+    main()

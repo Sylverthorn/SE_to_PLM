@@ -227,7 +227,7 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
         "version": "-",
         "auteur": "",
         "date_creation": "",
-        "auteur modif": "",
+        "auteur_modif": "",
         "date_modif": ""
     }
     
@@ -264,11 +264,21 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
         noms_version = ["indice de modification", "revision index", "index", "revision", "rev"]
         try:
             custom_props = prop_reader.Item("Custom")
+
+            # Accès direct par nom pour les champs sensibles à la casse
+            for nom_champ, cle_meta in [("auteur modif", "auteur_modif"), ("date modif", "date_modif")]:
+                try:
+                    p = custom_props.Item(nom_champ)
+                    val = str(p.Value).strip() if p.Value is not None else ""
+                    meta[cle_meta] = val
+                except:
+                    pass
+
+            # Itération par index pour les autres champs
             for i in range(1, custom_props.Count + 1):
                 try:
                     prop = custom_props.Item(i)
-                    nom = prop.Name
-                    nom_lower = nom.lower()
+                    nom_lower = prop.Name.lower()
                     val = str(prop.Value).strip() if prop.Value is not None else ""
 
                     if nom_lower in ("désignation", "designation", "desig"):
@@ -279,10 +289,6 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
                         meta["version"] = val
                         if debug:
                             print(f"  -> Version: {val}")
-                    elif nom_lower == "auteur modif":
-                        meta["auteur modif"] = val
-                    elif nom_lower == "date modif":
-                        meta["date_modif"] = val
                 except:
                     pass
         except:
@@ -323,7 +329,7 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                 print(f"  -> Cache hit pour {os.path.basename(doc_id)}")
             return cached.copy()
     
-    meta = {"designation": "", "revision": "1", "version": "-", "auteur": "", "date_creation": "", "auteur modif": "", "date modif": ""}
+    meta = {"designation": "", "revision": "1", "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
 
     if debug:
         lister_proprietes(doc_obj)
@@ -348,6 +354,15 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                             pass
                 # Désignation, dates, version depuis Custom
                 elif prop_set.Name == "Custom":
+                    # Accès direct par nom pour les champs sensibles à la casse
+                    for nom_champ, cle_meta in [("auteur modif", "auteur_modif"), ("date modif", "date_modif")]:
+                        try:
+                            p = prop_set.Item(nom_champ)
+                            val = str(p.Value).strip() if p.Value is not None else ""
+                            meta[cle_meta] = val
+                        except:
+                            pass
+                    # Itération par index pour les autres champs
                     for prop in prop_set:
                         try:
                             nom_lower = prop.Name.lower()
@@ -358,10 +373,6 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                                 meta["date_creation"] = val
                             elif any(n in nom_lower for n in noms_version):
                                 meta["version"] = val
-                            elif nom_lower == "auteur modif":
-                                meta["auteur modif"] = val
-                            elif nom_lower == "date modif":
-                                meta["date modif"] = val
                         except:
                             pass
         except:
@@ -529,12 +540,12 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
                 
                 # Si pas de chemin, utiliser des valeurs par défaut
                 if not data["chemin"]:
-                    meta = {"revision": "1", "designation": nom, "version": "-", "auteur": "", "date_creation": "", "auteur modif": "", "date modif": ""}
+                    meta = {"revision": "1", "designation": nom, "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
                     log(f"  -> Métadonnées par défaut pour {nom} (chemin manquant)", 'warning')
                 else:
                     meta = extraire_metadonnees_rapide(data["chemin"])
                 
-                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"], meta["auteur"], meta["date_creation"], meta["auteur modif"], meta["date_modif"])
+                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"], meta["auteur"], meta["date_creation"], meta["auteur_modif"], meta["date_modif"])
                 
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
                 if nom_sans_ext in index_plans:
@@ -555,7 +566,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
         log("\nAnalyse de la structure...", 'info')
         meta_root = extraire_metadonnees(doc_racine)
         nom_root = os.path.basename(doc_racine.FullName)
-        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur modif"], meta_root["date_modif"])
+        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur_modif"], meta_root["date_modif"])
         
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
         if nom_root_pur in index_plans:
@@ -593,7 +604,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             
             if item["dft_path"] not in plans_deja_traites:
                 meta_dft = extraire_metadonnees_rapide(item["dft_path"])
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"], meta_dft["auteur"], meta_dft["date_creation"], meta_dft["auteur modif"], meta_dft["date_modif"])
+                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"], meta_dft["auteur"], meta_dft["date_creation"], meta_dft["auteur_modif"], meta_dft["date_modif"])
                 ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"], "", "", "", "")
                 plans_deja_traites.add(item["dft_path"])
         
