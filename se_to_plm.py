@@ -495,7 +495,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             suffixe = get_suffixe_fichier(nom_fichier)
             chemin_normalise = os.path.normpath(chemin_complet)
             attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
-            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, rev, desig, "", attachement, auteur, date_crea, auteur_modif, date_modif])
+            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, rev, desig, auteur, date_crea, auteur_modif, date_modif, "", attachement])
             compteur_ordre += 1
         
         def explorer_occurrences(occurrences, niveau):
@@ -618,7 +618,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
         ws = wb.active
         ws.title = "Structure"
         
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "dia_se", "Attachments", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1"]
+        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "revision", "designation", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1", "dia_se", "Attachments"]
         ws.append(headers)
         
         header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
