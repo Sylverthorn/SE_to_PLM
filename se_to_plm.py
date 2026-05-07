@@ -211,16 +211,74 @@ def lister_proprietes(doc_obj):
         print(f"  Erreur listing propriétés: {e}")
 
 def normaliser_date(valeur):
-    """Convertit une date SE (25/04/25 ou 25/04/2025) en '25/04/2025 12:00:00 AM'."""
+    """Convertit divers formats de date en '25/04/2025 12:00:00 AM'.
+    
+    Formats supportés:
+    - JJ/MM/AA (25/04/25)
+    - JJ/MM/AAAA (25/04/2025)
+    - JJ-MM-AA (25-04-25)
+    - JJ-MM-AAAA (25-04-2025)
+    - JJ/MM/AAAA HH:MM (25/04/2025 14:30)
+    - JJ/MM/AAAA HH:MM:SS (25/04/2025 14:30:45)
+    - AAAA-MM-JJ (2025-04-25)
+    - AAAA/MM/JJ (2025/04/25)
+    - JJ/MM/AA (avec espaces) ( 25/04/25 )
+    - Formats avec points : JJ.MM.AA (25.04.25)
+    """
     if not valeur:
         return valeur
+    
     from datetime import datetime
-    for fmt in ("%d/%m/%y", "%d/%m/%Y"):
+    import re
+    
+    # Nettoyer la valeur : enlever les espaces superflus
+    valeur_propre = valeur.strip()
+    
+    # Liste des formats à essayer (du plus spécifique au plus général)
+    formats = [
+        "%d/%m/%Y %H:%M:%S",      # 25/04/2025 14:30:45
+        "%d/%m/%Y %H:%M",         # 25/04/2025 14:30
+        "%d-%m-%Y %H:%M:%S",      # 25-04-2025 14:30:45
+        "%d-%m-%Y %H:%M",         # 25-04-2025 14:30
+        "%Y-%m-%d %H:%M:%S",      # 2025-04-25 14:30:45
+        "%Y-%m-%d %H:%M",         # 2025-04-25 14:30
+        "%Y/%m/%d %H:%M:%S",      # 2025/04/25 14:30:45
+        "%Y/%m/%d %H:%M",         # 2025/04/25 14:30
+        "%d/%m/%Y",               # 25/04/2025
+        "%d-%m-%Y",               # 25-04-2025
+        "%d.%m.%Y",               # 25.04.2025
+        "%Y-%m-%d",               # 2025-04-25
+        "%Y/%m/%d",               # 2025/04/25
+        "%d/%m/%y",               # 25/04/25
+        "%d-%m-%y",               # 25-04-25
+        "%d.%m.%y",               # 25.04.25
+    ]
+    
+    # Essayer chaque format
+    for fmt in formats:
         try:
-            return datetime.strptime(valeur.strip(), fmt).strftime("%d/%m/%Y 12:00:00 AM")
+            date_obj = datetime.strptime(valeur_propre, fmt)
+            return date_obj.strftime("%d/%m/%Y 12:00:00 AM")
         except ValueError:
-            pass
-    return valeur  # retourne tel quel si non reconnu
+            continue
+    
+    # Essayer de détecter et corriger les formats avec séparateurs mixtes
+    # Par exemple: 25/04-2025 ou 25-04/2025
+    separateurs = ['/', '-', '.']
+    for sep in separateurs:
+        if sep in valeur_propre:
+            # Remplacer tous les séparateurs par le même
+            valeur_normalisee = re.sub(r'[/\-\.]', sep, valeur_propre)
+            for fmt in ["%d%sep%m%sep%Y", "%d%sep%m%sep%y"]:
+                fmt = fmt.replace("%sep", sep)
+                try:
+                    date_obj = datetime.strptime(valeur_normalisee, fmt)
+                    return date_obj.strftime("%d/%m/%Y 12:00:00 AM")
+                except ValueError:
+                    continue
+    
+    # Si aucun format ne correspond, retourner la valeur originale
+    return valeur
 
 
 def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
@@ -299,9 +357,9 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
                     elif nom_lower in ("date de création", "date de creation"):
                         meta["date_creation"] = normaliser_date(val)
                     elif any(n in nom_lower for n in noms_version):
-                        meta["version"] = val
+                        meta["version"] = val if val.strip() else "-"
                         if debug:
-                            print(f"  -> Version: {val}")
+                            print(f"  -> Version: {val if val.strip() else '-'}")
                 except:
                     pass
         except:
@@ -385,7 +443,7 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                             elif nom_lower in ("date de création", "date de creation"):
                                 meta["date_creation"] = normaliser_date(val)
                             elif any(n in nom_lower for n in noms_version):
-                                meta["version"] = val
+                                meta["version"] = val if val.strip() else "-"
                         except:
                             pass
         except:
@@ -534,12 +592,34 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             elif ext == '.dft': return "(DRW)"
             return ""
         
+        def normaliser_chemin_reseau(chemin):
+            """Normalise un chemin en préservant les adresses IP réseau."""
+            if not chemin:
+                return chemin
+            
+            # Si c'est un chemin réseau UNC, vérifier si c'est une adresse IP
+            if chemin.startswith('\\\\'):
+                # Extraire la partie serveur/partage
+                parts = chemin[2:].split('\\', 2)
+                if len(parts) >= 2:
+                    serveur = parts[0]
+                    # Si le serveur est une adresse IP, la préserver
+                    if serveur.replace('.', '').isdigit():
+                        # C'est une adresse IP, ne pas normaliser pour éviter la résolution DNS
+                        return chemin.replace('/', '\\')  # Juste corriger les slashs inversés
+                    else:
+                        # C'est un nom d'hôte, on peut normaliser
+                        return os.path.normpath(chemin)
+            
+            # Pour les chemins locaux, utiliser la normalisation standard
+            return os.path.normpath(chemin)
+
         def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-", auteur="", date_crea="", auteur_modif="", date_modif=""):
             nonlocal compteur_ordre
             ref_util = os.path.splitext(nom_fichier)[0]
             special_cad = os.path.splitext(nom_fichier)[0]
             suffixe = get_suffixe_fichier(nom_fichier)
-            chemin_normalise = os.path.normpath(chemin_complet)
+            chemin_normalise = normaliser_chemin_reseau(chemin_complet)
             attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
             lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, *calculer_indices_precedents(ver), rev, desig, auteur, date_crea, auteur_modif, date_modif, "", attachement])
             compteur_ordre += 1
