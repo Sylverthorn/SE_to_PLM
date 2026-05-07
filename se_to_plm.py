@@ -664,7 +664,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
         ws = wb.active
         ws.title = "Structure"
         
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "indice n-1", "indice n-2", "revision", "designation", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1", "dia_se", "Attachments"]
+        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "indice_1", "indice_2", "revision", "designation", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1", "dia_se", "Attachments"]
         ws.append(headers)
         
         header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
