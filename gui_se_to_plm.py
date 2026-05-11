@@ -1,6 +1,7 @@
 import sys
 import os
 from datetime import datetime
+import win32com.client
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog, QMessageBox, QComboBox, QDialog, QProgressBar)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
@@ -13,13 +14,14 @@ class ExtractionThread(QThread):
     finished_signal = pyqtSignal()
     progress_signal = pyqtSignal(int, int, str)  # (valeur, maximum, message)
 
-    def __init__(self, chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche_dft="les_deux"):
+    def __init__(self, chemin_fichier, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche_dft="les_deux", type_fichier="asm"):
         super().__init__()
-        self.chemin_asm = chemin_asm
+        self.chemin_fichier = chemin_fichier
         self.dossier_sortie = dossier_sortie
         self.nom_sortie = nom_sortie
         self.dossier_dft = dossier_dft
         self.mode_recherche_dft = mode_recherche_dft
+        self.type_fichier = type_fichier
         self._cancelled = False
     
     def cancel(self):
@@ -39,11 +41,12 @@ class ExtractionThread(QThread):
             
             # Utiliser le moteur centralisé
             resultat = generer_export_excel(
-                chemin_asm=self.chemin_asm,
+                chemin_fichier=self.chemin_fichier,
                 dossier_sortie=self.dossier_sortie,
                 nom_sortie=self.nom_sortie,
                 dossier_dft=self.dossier_dft,
                 mode_recherche=self.mode_recherche_dft,
+                type_fichier=self.type_fichier,
                 callback_log=callback_log,
                 callback_progress=callback_progress,
                 check_cancelled=check_cancelled
@@ -67,8 +70,74 @@ class PLMExtractorGUI(QMainWindow):
         self.creer_interface()
     
     def closeEvent(self, event):
-        """Fermer Solid Edge quand l'application est fermée avec une fenêtre de chargement."""
-        # Créer une fenêtre de chargement
+        """Demander confirmation pour fermer Solid Edge quand l'application est fermée."""
+        # Vérifier si Solid Edge est en cours d'exécution
+        try:
+            app_se = win32com.client.GetActiveObject("SolidEdge.Application")
+        except:
+            # Solid Edge n'est pas lancé, fermer l'application normalement
+            event.accept()
+            return
+        
+        # Demander confirmation à l'utilisateur
+        reply = QMessageBox.question(
+            self, 
+            "Fermeture de Solid Edge",
+            "Voulez-vous fermer Solid Edge pour libérer la licence ?\n\n"
+            "Cela libérera la licence pour d'autres utilisateurs.",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes
+        )
+        
+        if reply == QMessageBox.Cancel:
+            event.ignore()
+            return
+        elif reply == QMessageBox.No:
+            event.accept()
+            return
+        
+        # Fermer Solid Edge
+        self._fermer_solid_edge(app_se)
+        event.accept()
+    
+    def _fermer_solid_edge(self, app_se):
+        """Ferme Solid Edge avec plusieurs méthodes si nécessaire."""
+        import time
+        import os
+        
+        # Afficher la fenêtre de chargement
+        loading_dialog = self._creer_fenetre_chargement()
+        
+        try:
+            # Méthode 1: Quit() normal
+            if self._essayer_quitter(app_se, 3):
+                self.log("Solid Edge a été fermé avec succès.", 'success')
+                return
+            
+            # Méthode 2: Fermer les documents puis quitter
+            if self._fermer_documents_puis_quitter(app_se):
+                self.log("Solid Edge a été fermé avec succès.", 'success')
+                return
+            
+            # Méthode 3: taskkill (dernier recours)
+            os.system("taskkill /f /im SolidEdge.exe")
+            time.sleep(1)
+            self.log("Solid Edge a été fermé de force.", 'warning')
+            
+        except Exception as e:
+            self.log(f"Erreur lors de la fermeture de Solid Edge: {e}", 'error')
+            # Dernière tentative avec taskkill
+            try:
+                os.system("taskkill /f /im SolidEdge.exe")
+                self.log("Solid Edge a été fermé de force.", 'warning')
+            except:
+                self.log("Impossible de fermer Solid Edge automatiquement.", 'error')
+        
+        finally:
+            loading_dialog.close()
+    
+    def _creer_fenetre_chargement(self):
+        """Crée et affiche une fenêtre de chargement."""
         loading_dialog = QDialog(self)
         loading_dialog.setWindowTitle("Fermeture")
         loading_dialog.setFixedSize(300, 100)
@@ -77,18 +146,41 @@ class PLMExtractorGUI(QMainWindow):
         label.setAlignment(Qt.AlignCenter)
         layout.addWidget(label)
         loading_dialog.show()
-        
-        # Forcer la mise à jour de l'interface
         QApplication.processEvents()
-        
+        return loading_dialog
+    
+    def _essayer_quitter(self, app_se, delai_attente=3):
+        """Essaye de fermer Solid Edge avec Quit() et vérifie le résultat."""
+        import time
         try:
-            app = win32com.client.dynamic.Dispatch("SolidEdge.Application")
-            app.Quit()
+            app_se.Quit()
+            time.sleep(delai_attente)
+            # Vérifier si Solid Edge est encore ouvert
+            win32com.client.GetActiveObject("SolidEdge.Application")
+            return False  # Encore ouvert
         except:
-            pass
-        
-        loading_dialog.close()
-        event.accept()
+            return True  # Fermé avec succès
+    
+    def _fermer_documents_puis_quitter(self, app_se):
+        """Ferme tous les documents puis essaie de quitter."""
+        import time
+        try:
+            # Fermer tous les documents
+            for doc in app_se.Documents:
+                try:
+                    doc.Close()
+                except:
+                    pass
+            
+            time.sleep(1)
+            app_se.Quit()
+            time.sleep(2)
+            
+            # Vérifier si c'est fermé
+            win32com.client.GetActiveObject("SolidEdge.Application")
+            return False
+        except:
+            return True
     
     def appliquer_style(self):
         chemin_style = os.path.join(os.path.dirname(__file__), 'style.qss')
@@ -102,15 +194,31 @@ class PLMExtractorGUI(QMainWindow):
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(10)
         
-        asm_layout = QHBoxLayout()
-        asm_layout.addWidget(QLabel("Fichier ASM :"))
-        self.chemin_asm_edit = QLineEdit()
-        self.chemin_asm_edit.setReadOnly(True)
-        asm_layout.addWidget(self.chemin_asm_edit)
+        # Type de fichier principal
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Type de fichier :"))
+        self.type_fichier_combo = QComboBox()
+        self.type_fichier_combo.addItems([
+            "Assemblage (.asm)",
+            "Pièces (.par/.psm)",
+            "Les deux"
+        ])
+        self.type_fichier_combo.setCurrentIndex(0)  # "Assemblage" par défaut
+        self.type_fichier_combo.currentIndexChanged.connect(self.on_type_fichier_changed)
+        type_layout.addWidget(self.type_fichier_combo)
+        main_layout.addLayout(type_layout)
+        
+        # Fichier principal
+        fichier_layout = QHBoxLayout()
+        self.label_fichier = QLabel("Fichier ASM :")
+        fichier_layout.addWidget(self.label_fichier)
+        self.chemin_fichier_edit = QLineEdit()
+        self.chemin_fichier_edit.setReadOnly(True)
+        fichier_layout.addWidget(self.chemin_fichier_edit)
         btn_parcourir = QPushButton("Parcourir...")
-        btn_parcourir.clicked.connect(self.choisir_fichier_asm)
-        asm_layout.addWidget(btn_parcourir)
-        main_layout.addLayout(asm_layout)
+        btn_parcourir.clicked.connect(self.choisir_fichier)
+        fichier_layout.addWidget(btn_parcourir)
+        main_layout.addLayout(fichier_layout)
         
         # Mode de recherche DFT
         mode_layout = QHBoxLayout()
@@ -175,19 +283,44 @@ class PLMExtractorGUI(QMainWindow):
         self.console.setReadOnly(True)
         main_layout.addWidget(self.console)
     
-    def choisir_fichier_asm(self):
+    def on_type_fichier_changed(self, index):
+        """Gère le changement de type de fichier principal."""
+        if index == 0:  # Assemblage
+            self.label_fichier.setText("Fichier ASM :")
+        elif index == 1:  # Pièces
+            self.label_fichier.setText("Fichier pièce :")
+        else:  # Les deux
+            self.label_fichier.setText("Fichier principal :")
+        
+        # Vider le champ de fichier
+        self.chemin_fichier_edit.clear()
+    
+    def choisir_fichier(self):
+        """Ouvre le dialogue de sélection selon le type de fichier choisi."""
+        type_index = self.type_fichier_combo.currentIndex()
+        
+        if type_index == 0:  # Assemblage
+            titre = "Sélectionnez l'assemblage principal (.asm)"
+            filtre = "Assemblage Solid Edge (*.asm)"
+        elif type_index == 1:  # Pièces
+            titre = "Sélectionnez une pièce (.par/.psm)"
+            filtre = "Pièces Solid Edge (*.par *.psm)"
+        else:  # Les deux
+            titre = "Sélectionnez un fichier Solid Edge"
+            filtre = "Fichiers Solid Edge (*.asm *.par *.psm)"
+        
         chemin, _ = QFileDialog.getOpenFileName(
             self,
-            "Sélectionnez l'assemblage principal (.asm)",
+            titre,
             "",
-            "Assemblage Solid Edge (*.asm)"
+            filtre
         )
         if chemin:
-            self.chemin_asm_edit.setText(chemin)
+            self.chemin_fichier_edit.setText(chemin)
             self.log(f"Fichier sélectionné : {chemin}", 'info')
-            nom_asm = os.path.splitext(os.path.basename(chemin))[0]
+            nom_fichier = os.path.splitext(os.path.basename(chemin))[0]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            self.nom_sortie_edit.setText(f"Export_PLM_{nom_asm}_{timestamp}.xlsx")
+            self.nom_sortie_edit.setText(f"Export_PLM_{nom_fichier}_{timestamp}.xlsx")
     
     def on_mode_dft_changed(self, index):
         """Active/désactive le champ dossier DFT selon le mode sélectionné."""
@@ -232,13 +365,16 @@ class PLMExtractorGUI(QMainWindow):
             QMessageBox.warning(self, "Attention", "Une extraction est déjà en cours.")
             return
         
-        chemin_asm = self.chemin_asm_edit.text()
-        if not chemin_asm:
-            QMessageBox.warning(self, "Attention", "Veuillez sélectionner un fichier ASM.")
+        chemin_fichier = self.chemin_fichier_edit.text()
+        type_index = self.type_fichier_combo.currentIndex()
+        
+        if not chemin_fichier:
+            type_nom = ["ASM", "pièce", "fichier"][type_index]
+            QMessageBox.warning(self, "Attention", f"Veuillez sélectionner un {type_nom}.")
             return
         
-        if not os.path.exists(chemin_asm):
-            QMessageBox.critical(self, "Erreur", "Le fichier ASM sélectionné n'existe pas.")
+        if not os.path.exists(chemin_fichier):
+            QMessageBox.critical(self, "Erreur", "Le fichier sélectionné n'existe pas.")
             return
         
         os.makedirs(self.dossier_sortie, exist_ok=True)
@@ -257,7 +393,15 @@ class PLMExtractorGUI(QMainWindow):
         else:
             mode_recherche = "les_deux"
         
-        self.thread = ExtractionThread(chemin_asm, self.dossier_sortie, self.nom_sortie_edit.text(), dossier_dft, mode_recherche)
+        # Convertir l'index du type de fichier
+        if type_index == 0:
+            type_fichier = "asm"
+        elif type_index == 1:
+            type_fichier = "pieces"
+        else:
+            type_fichier = "les_deux"
+        
+        self.thread = ExtractionThread(chemin_fichier, self.dossier_sortie, self.nom_sortie_edit.text(), dossier_dft, mode_recherche, type_fichier)
         self.thread.log_signal.connect(self.log)
         self.thread.progress_signal.connect(self.update_progress)
         self.thread.finished_signal.connect(self.extraction_terminee)

@@ -510,17 +510,18 @@ def determiner_classe(nom_fichier, chemin_complet="", est_projet=False):
     if ext == '.dft': return "CAD_DRAWING_A"
     return "Folder"
 
-def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche="les_deux", 
+def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft=None, mode_recherche="les_deux", type_fichier="asm",
                          callback_log=None, callback_progress=None, check_cancelled=None):
     """
     Fonction moteur principale pour générer l'export PLM.
     
     Args:
-        chemin_asm: Chemin du fichier assemblage principal
+        chemin_fichier: Chemin du fichier principal (.asm, .par, .psm)
         dossier_sortie: Dossier de sortie pour le fichier Excel
         nom_sortie: Nom du fichier de sortie
         dossier_dft: Dossier spécifique pour les plans (optionnel)
         mode_recherche: Mode de recherche des plans ("arborescence", "dossier_specifique", "les_deux")
+        type_fichier: Type de fichier principal ("asm", "pieces", "les_deux")
         callback_log: Fonction callback(message, type) pour les logs (type: 'info', 'success', 'error', 'warning')
         callback_progress: Fonction callback(valeur, maximum, message) pour la progression
         check_cancelled: Fonction callback() qui retourne True si l'opération doit être annulée
@@ -558,7 +559,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
 
         log(f"\n--- Indexation des plans (.dft) [Mode: {mode_recherche}] ---", 'info')
         progress(0, 100, "Indexation des plans...")
-        index_plans = indexer_les_plans_projet_entier(chemin_asm, dossier_dft, mode_recherche, callback_progress=on_index_progress)
+        index_plans = indexer_les_plans_projet_entier(chemin_fichier, dossier_dft, mode_recherche, callback_progress=on_index_progress)
         log(f"-> {len(index_plans)} plan(s) détecté(s).", 'info')
         progress(10, 100, f"{len(index_plans)} plans indexés")
         
@@ -576,11 +577,11 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
 
         # Vérifier si le document est déjà ouvert pour éviter l'ouverture en lecture seule
         doc_racine = None
-        chemin_asm_norm = os.path.normcase(chemin_asm)
+        chemin_fichier_norm = os.path.normcase(chemin_fichier)
         try:
             for doc in app.Documents:
                 try:
-                    if os.path.normcase(doc.FullName) == chemin_asm_norm:
+                    if os.path.normcase(doc.FullName) == chemin_fichier_norm:
                         doc_racine = doc
                         log("Document déjà ouvert, réutilisation de l'instance existante.", 'info')
                         break
@@ -590,7 +591,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             pass
 
         if doc_racine is None:
-            doc_racine = app.Documents.Open(chemin_asm)
+            doc_racine = app.Documents.Open(chemin_fichier)
         log("Document chargé.", 'success')
         
         lignes_excel = []
@@ -705,7 +706,20 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
         log("\nAnalyse de la structure...", 'info')
         meta_root = extraire_metadonnees(doc_racine)
         nom_root = os.path.basename(doc_racine.FullName)
-        ajouter_ligne(0, "", nom_root, doc_racine.FullName, "SUB_ASSY_A", 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur_modif"], meta_root["date_modif"])
+        
+        # Déterminer la classe du fichier racine selon le type
+        ext_root = os.path.splitext(nom_root)[1].lower()
+        if type_fichier == "asm":
+            classe_root = "SUB_ASSY_A"
+        elif type_fichier == "pieces":
+            classe_root = determiner_classe(nom_root, doc_racine.FullName)
+        else:  # "les_deux"
+            if ext_root == '.asm':
+                classe_root = "SUB_ASSY_A"
+            else:
+                classe_root = determiner_classe(nom_root, doc_racine.FullName)
+        
+        ajouter_ligne(0, "", nom_root, doc_racine.FullName, classe_root, 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur_modif"], meta_root["date_modif"])
         
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
         if nom_root_pur in index_plans:
@@ -714,12 +728,17 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             liste_plans_a_rajouter.append({
                 "dft_nom": nom_dft_root, "dft_path": path_dft_root,
                 "src_nom": nom_root, "src_path": doc_racine.FullName,
-                "src_classe": "SUB_ASSY_A", "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
+                "src_classe": classe_root, "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
                 "src_ver": meta_root["version"]
             })
             stats["2d"] += 1
         
-        explorer_occurrences(doc_racine.Occurrences, 1)
+        # Explorer les occurrences seulement si c'est un assemblage
+        if ext_root == '.asm' and hasattr(doc_racine, 'Occurrences'):
+            explorer_occurrences(doc_racine.Occurrences, 1)
+        else:
+            # Pour les pièces simples, incrémenter juste les stats 3D
+            stats["3d"] += 1
         
         log("\nExtraction métadonnées des plans...", 'info')
         progress(50, 100, "Extraction des métadonnées des plans...")
