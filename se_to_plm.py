@@ -488,12 +488,25 @@ def calculer_indices_precedents(version):
     return n1, n2
 
 
-def determiner_classe(nom_fichier, est_projet=False):
-    """Détermine la classe PLM en fonction de l'extension du fichier."""
+def determiner_classe(nom_fichier, chemin_complet="", est_projet=False):
+    """Détermine la classe PLM en fonction de l'extension du fichier et du chemin.
+    
+    Les fichiers dans le répertoire "Bibliothèque" sont classés comme PART_PURCH_A.
+    """
     if est_projet: return "SUB_ASSY_A"
     ext = os.path.splitext(nom_fichier)[1].lower()
     if ext == '.asm': return "SUB_ASSY_A"
-    if ext in ['.par', '.psm']: return "PART_A"
+    if ext in ['.par', '.psm']:
+        # Vérifier si le fichier est dans un répertoire "Bibliothèque" à n'importe quel niveau
+        if chemin_complet:
+            # Normaliser le chemin et diviser en composants
+            chemin_normalise = os.path.normpath(chemin_complet)
+            composants = chemin_normalise.split(os.sep)
+            # Vérifier chaque composant du chemin
+            for composant in composants:
+                if composant.lower() in ["bibliothèque", "bibliotheque", "library"]:
+                    return "PART_PURCH_A"
+        return "PART_A"
     if ext == '.dft': return "CAD_DRAWING_A"
     return "Folder"
 
@@ -662,7 +675,7 @@ def generer_export_excel(chemin_asm, dossier_sortie, nom_sortie, dossier_dft=Non
             
             for nom, data in dict_occ.items():
                 stats["3d"] += 1
-                classe_3d = determiner_classe(nom)
+                classe_3d = determiner_classe(nom, data["chemin"])
                 
                 # Si pas de chemin, utiliser des valeurs par défaut
                 if not data["chemin"]:
