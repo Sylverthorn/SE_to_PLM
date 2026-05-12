@@ -62,7 +62,7 @@ def indexer_les_plans_projet_entier(chemin_asm_initial, dossier_dft=None, mode_r
     # Mode arborescence ou les_deux: ajouter l'arborescence depuis l'ASM
     if mode_recherche in ["arborescence", "les_deux"]:
         racine_projet = chemin_asm_initial
-        for _ in range(2):
+        for _ in range(3):
             parent = os.path.dirname(racine_projet)
             if not parent or parent == racine_projet:
                 break
