@@ -762,7 +762,21 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
             
             if item["dft_path"] not in plans_deja_traites:
                 meta_dft = extraire_metadonnees_rapide(item["dft_path"])
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"], meta_dft["auteur"], meta_dft["date_creation"], meta_dft["auteur_modif"], meta_dft["date_modif"])
+                
+                # Récupérer les métadonnées de la pièce source pour la copie si nécessaire
+                meta_piece = extraire_metadonnees_rapide(item["src_path"])
+                
+                # Copier les valeurs de la pièce vers le DFT si les champs DFT sont vides
+                auteur_final = meta_dft["auteur"] if meta_dft["auteur"].strip() else meta_piece["auteur"]
+                date_crea_final = meta_dft["date_creation"] if meta_dft["date_creation"].strip() else meta_piece["date_creation"]
+                
+                # Log si une copie a été effectuée
+                if not meta_dft["auteur"].strip() and meta_piece["auteur"].strip():
+                    log(f"  -> Copie auteur depuis {item['src_nom']}: {meta_piece['auteur']}", 'info')
+                if not meta_dft["date_creation"].strip() and meta_piece["date_creation"].strip():
+                    log(f"  -> Copie date création depuis {item['src_nom']}: {meta_piece['date_creation']}", 'info')
+                
+                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"], auteur_final, date_crea_final, meta_dft["auteur_modif"], meta_dft["date_modif"])
                 ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"], "", "", "", "")
                 plans_deja_traites.add(item["dft_path"])
         
