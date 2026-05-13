@@ -299,7 +299,9 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
         "auteur": "",
         "date_creation": "",
         "auteur_modif": "",
-        "date_modif": ""
+        "date_modif": "",
+        "matiere": "",       # NOUVEAU
+        "densite": "",       # NOUVEAU
     }
     
     # Vérifier le cache si activé
@@ -331,13 +333,19 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
         except:
             pass
 
-        # 2. Custom -> Désignation, Date de création, version, auteur_modif, date_modif
+        # 2. Custom -> Désignation, Date de création, version, auteur_modif, date_modif,
+        #              Matière, Densité
         noms_version = ["indice de modification", "revision index", "index", "revision", "rev"]
         try:
             custom_props = prop_reader.Item("Custom")
 
             # Accès direct par nom pour les champs sensibles à la casse
-            for nom_champ, cle_meta in [("auteur modif", "auteur_modif"), ("date modif", "date_modif")]:
+            for nom_champ, cle_meta in [
+                ("auteur modif",  "auteur_modif"),
+                ("date modif",    "date_modif"),
+                ("Matière",       "matiere"),   # NOUVEAU — accès direct (casse exacte)
+                ("Densité",       "densite"),   # NOUVEAU — accès direct (casse exacte)
+            ]:
                 try:
                     p = custom_props.Item(nom_champ)
                     val = str(p.Value).strip() if p.Value is not None else ""
@@ -346,6 +354,7 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
                     pass
 
             # Itération par index pour les autres champs
+            # (couvre aussi Matière/Densité si la casse diffère)
             for i in range(1, custom_props.Count + 1):
                 try:
                     prop = custom_props.Item(i)
@@ -360,6 +369,12 @@ def extraire_metadonnees_rapide(chemin_fichier, debug=False, use_cache=True):
                         meta["version"] = val if val.strip() else "-"
                         if debug:
                             print(f"  -> Version: {val if val.strip() else '-'}")
+                    elif nom_lower in ("matière", "matiere"):      # NOUVEAU
+                        if not meta["matiere"]:                    # ne pas écraser l'accès direct
+                            meta["matiere"] = val
+                    elif nom_lower in ("densité", "densite"):      # NOUVEAU
+                        if not meta["densite"]:
+                            meta["densite"] = val
                 except:
                     pass
         except:
@@ -400,7 +415,12 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                 print(f"  -> Cache hit pour {os.path.basename(doc_id)}")
             return cached.copy()
     
-    meta = {"designation": "", "revision": "1", "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
+    meta = {
+        "designation": "", "revision": "1", "version": "-",
+        "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": "",
+        "matiere": "",   # NOUVEAU
+        "densite": "",   # NOUVEAU
+    }
 
     if debug:
         lister_proprietes(doc_obj)
@@ -423,10 +443,15 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                                 break
                         except:
                             pass
-                # Désignation, dates, version depuis Custom
+                # Désignation, dates, version, matière, densité depuis Custom
                 elif prop_set.Name == "Custom":
                     # Accès direct par nom pour les champs sensibles à la casse
-                    for nom_champ, cle_meta in [("auteur modif", "auteur_modif"), ("date modif", "date_modif")]:
+                    for nom_champ, cle_meta in [
+                        ("auteur modif",  "auteur_modif"),
+                        ("date modif",    "date_modif"),
+                        ("Matière",       "matiere"),   # NOUVEAU
+                        ("Densité",       "densite"),   # NOUVEAU
+                    ]:
                         try:
                             p = prop_set.Item(nom_champ)
                             val = str(p.Value).strip() if p.Value is not None else ""
@@ -444,6 +469,12 @@ def extraire_metadonnees(doc_obj, debug=False, use_cache=True):
                                 meta["date_creation"] = normaliser_date(val)
                             elif any(n in nom_lower for n in noms_version):
                                 meta["version"] = val if val.strip() else "-"
+                            elif nom_lower in ("matière", "matiere"):   # NOUVEAU
+                                if not meta["matiere"]:
+                                    meta["matiere"] = val
+                            elif nom_lower in ("densité", "densite"):   # NOUVEAU
+                                if not meta["densite"]:
+                                    meta["densite"] = val
                         except:
                             pass
         except:
@@ -628,14 +659,22 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
             # Pour les chemins locaux, utiliser la normalisation standard
             return os.path.normpath(chemin)
 
-        def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1", desig="", ver="-", auteur="", date_crea="", auteur_modif="", date_modif=""):
+        def ajouter_ligne(niveau, relation, nom_fichier, chemin_complet, classe, qte=1, rev="1",
+                          desig="", ver="-", auteur="", date_crea="", auteur_modif="", date_modif="",
+                          matiere="", densite=""):
             nonlocal compteur_ordre
             ref_util = os.path.splitext(nom_fichier)[0]
             special_cad = os.path.splitext(nom_fichier)[0]
             suffixe = get_suffixe_fichier(nom_fichier)
             chemin_normalise = normaliser_chemin_reseau(chemin_complet)
             attachement = f"{chemin_normalise}{suffixe}" if suffixe else chemin_normalise
-            lignes_excel.append([niveau, relation, compteur_ordre, qte, "", special_cad, classe, ref_util, ver, *calculer_indices_precedents(ver), rev, desig, auteur, date_crea, auteur_modif, date_modif, "", attachement])
+            lignes_excel.append([
+                niveau, relation, compteur_ordre, qte, "", special_cad, classe,
+                ref_util, ver, *calculer_indices_precedents(ver), rev, desig,
+                auteur, date_crea, auteur_modif, date_modif,
+                matiere, densite,       # NOUVEAU — colonnes 19 et 20
+                "", attachement
+            ])
             compteur_ordre += 1
         
         def explorer_occurrences(occurrences, niveau):
@@ -680,12 +719,19 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
                 
                 # Si pas de chemin, utiliser des valeurs par défaut
                 if not data["chemin"]:
-                    meta = {"revision": "1", "designation": nom, "version": "-", "auteur": "", "date_creation": "", "auteur_modif": "", "date_modif": ""}
+                    meta = {"revision": "1", "designation": nom, "version": "-", "auteur": "",
+                            "date_creation": "", "auteur_modif": "", "date_modif": "",
+                            "matiere": "", "densite": ""}
                     log(f"  -> Métadonnées par défaut pour {nom} (chemin manquant)", 'warning')
                 else:
                     meta = extraire_metadonnees_rapide(data["chemin"])
                 
-                ajouter_ligne(niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"], meta["revision"], meta["designation"], meta["version"], meta["auteur"], meta["date_creation"], meta["auteur_modif"], meta["date_modif"])
+                ajouter_ligne(
+                    niveau, "ComposedOf", nom, data["chemin"], classe_3d, data["qte"],
+                    meta["revision"], meta["designation"], meta["version"],
+                    meta["auteur"], meta["date_creation"], meta["auteur_modif"], meta["date_modif"],
+                    meta["matiere"], meta["densite"]   # NOUVEAU
+                )
                 
                 nom_sans_ext = os.path.splitext(nom)[0].lower()
                 if nom_sans_ext in index_plans:
@@ -694,8 +740,9 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
                     liste_plans_a_rajouter.append({
                         "dft_nom": nom_dft, "dft_path": chemin_dft,
                         "src_nom": nom, "src_path": data["chemin"],
-                        "src_classe": classe_3d, "src_rev": meta["revision"], "src_desig": meta["designation"],
-                        "src_ver": meta["version"]
+                        "src_classe": classe_3d, "src_rev": meta["revision"],
+                        "src_desig": meta["designation"], "src_ver": meta["version"],
+                        "src_matiere": meta["matiere"], "src_densite": meta["densite"]  # NOUVEAU
                     })
                     stats["2d"] += 1
                 
@@ -719,7 +766,13 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
             else:
                 classe_root = determiner_classe(nom_root, doc_racine.FullName)
         
-        ajouter_ligne(0, "", nom_root, doc_racine.FullName, classe_root, 1, meta_root["revision"], meta_root["designation"], meta_root["version"], meta_root["auteur"], meta_root["date_creation"], meta_root["auteur_modif"], meta_root["date_modif"])
+        ajouter_ligne(
+            0, "", nom_root, doc_racine.FullName, classe_root, 1,
+            meta_root["revision"], meta_root["designation"], meta_root["version"],
+            meta_root["auteur"], meta_root["date_creation"],
+            meta_root["auteur_modif"], meta_root["date_modif"],
+            meta_root["matiere"], meta_root["densite"]   # NOUVEAU
+        )
         
         nom_root_pur = os.path.splitext(nom_root)[0].lower()
         if nom_root_pur in index_plans:
@@ -728,8 +781,9 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
             liste_plans_a_rajouter.append({
                 "dft_nom": nom_dft_root, "dft_path": path_dft_root,
                 "src_nom": nom_root, "src_path": doc_racine.FullName,
-                "src_classe": classe_root, "src_rev": meta_root["revision"], "src_desig": meta_root["designation"],
-                "src_ver": meta_root["version"]
+                "src_classe": classe_root, "src_rev": meta_root["revision"],
+                "src_desig": meta_root["designation"], "src_ver": meta_root["version"],
+                "src_matiere": meta_root["matiere"], "src_densite": meta_root["densite"]  # NOUVEAU
             })
             stats["2d"] += 1
         
@@ -776,8 +830,20 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
                 if not meta_dft["date_creation"].strip() and meta_piece["date_creation"].strip():
                     log(f"  -> Copie date création depuis {item['src_nom']}: {meta_piece['date_creation']}", 'info')
                 
-                ajouter_ligne(0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1, meta_dft["revision"], item["src_desig"], meta_dft["version"], auteur_final, date_crea_final, meta_dft["auteur_modif"], meta_dft["date_modif"])
-                ajouter_ligne(1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1, item["src_rev"], item["src_desig"], item["src_ver"], "", "", "", "")
+                # Ligne DFT : matière/densité depuis la pièce source (le DFT n'en a généralement pas)
+                ajouter_ligne(
+                    0, "", item["dft_nom"], item["dft_path"], "CAD_DRAWING_A", 1,
+                    meta_dft["revision"], item["src_desig"], meta_dft["version"],
+                    auteur_final, date_crea_final, meta_dft["auteur_modif"], meta_dft["date_modif"],
+                    item.get("src_matiere", ""), item.get("src_densite", "")   # NOUVEAU
+                )
+                # Ligne pièce associée sous le DFT
+                ajouter_ligne(
+                    1, "Drawing", item["src_nom"], item["src_path"], item["src_classe"], 1,
+                    item["src_rev"], item["src_desig"], item["src_ver"],
+                    "", "", "", "",
+                    item.get("src_matiere", ""), item.get("src_densite", "")   # NOUVEAU
+                )
                 plans_deja_traites.add(item["dft_path"])
         
         log(f"Analyse terminée : {stats['3d']} fichiers 3D, {stats['2d']} plans", 'success')
@@ -790,7 +856,18 @@ def generer_export_excel(chemin_fichier, dossier_sortie, nom_sortie, dossier_dft
         ws = wb.active
         ws.title = "Structure"
         
-        headers = ["Level", "Relationship", "ordre", "quantite", "repere", "SpecialCAD", "Class", "ref_utilisat", "version", "indice_1", "indice_2", "revision", "designation", "cus_createur", "cus_date_crea", "user_version_1", "date_version_1", "dia_se", "Attachments"]
+        # ------------------------------------------------------------------ #
+        # En-têtes — matiere (col 19) et densite (col 20) ajoutés avant       #
+        # dia_se et Attachments                                                #
+        # ------------------------------------------------------------------ #
+        headers = [
+            "Level", "Relationship", "ordre", "quantite", "repere",
+            "SpecialCAD", "Class", "ref_utilisat", "version", "indice_1", "indice_2",
+            "revision", "designation", "cus_createur", "cus_date_crea",
+            "user_version_1", "date_version_1",
+            "matiere", "densite",   # NOUVEAU
+            "dia_se", "Attachments"
+        ]
         ws.append(headers)
         
         header_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
@@ -850,7 +927,7 @@ def lancer_extraction_plm():
         
         # Utiliser le moteur centralisé
         resultat = generer_export_excel(
-            chemin_asm=chemin_asm,
+            chemin_fichier=chemin_asm,
             dossier_sortie=dossier_sortie,
             nom_sortie=nom_sortie,
             dossier_dft=None,
